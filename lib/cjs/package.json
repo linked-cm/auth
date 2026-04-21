@@ -1,0 +1,77 @@
+{
+  "name": "@_linked/auth",
+  "description": "",
+  "author": {
+    "name": "",
+    "email": "",
+    "url": ""
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "version": "1.0.5",
+  "lincd": true,
+  "license": "ISC",
+  "scripts": {
+    "start": "npm exec lincd dev",
+    "build": "yarn lincd build",
+    "prepublishOnly": "yarn lincd build production",
+    "postpublish": "npm exec lincd register"
+  },
+  "keywords": [
+    "lincd",
+    "linked data",
+    "interoperable",
+    "semantic web",
+    "web3"
+  ],
+  "dependencies": {
+    "@_linked/core": "^2.0.1",
+    "@_linked/react": "^1.1.0",
+    "@_linked/schema": "~1.0",
+    "@_linked/server": "~1.0",
+    "@_linked/server-utils": "~1.0",
+    "@_linked/xsd": "~1.0",
+    "@capacitor/dialog": "^7.0.2",
+    "@tolgee/react": "^5.16.2",
+    "@types/bcrypt": "^5.0.2",
+    "@types/js-cookie": "^3.0.6",
+    "@types/node": "^20.12.7",
+    "bcrypt": "^5.1.1",
+    "chalk": "^4.1.2",
+    "connect-sqlite3": "^0.9.15",
+    "cookie-parser": "^1.4.6",
+    "express-jwt": "^8.4.1",
+    "express-session": "^1.18.1",
+    "foaf": "~1.0",
+    "google-auth-library": "^9.0.0",
+    "js-cookie": "^3.0.5",
+    "jsonwebtoken": "^9.0.2",
+    "jwks-rsa": "^3.0.1",
+    "lincd-input": "~1.0",
+    "lincd-mui-base": "~1.0",
+    "lincd-rdfs": "~1.0",
+    "lincd-sioc": "~1.0",
+    "react-hook-form": "^7.47.0",
+    "ulid": "^3.0.1",
+    "zeptomail": "^3.0.4"
+  },
+  "peerDependencies": {
+    "react-router-dom": "^6.14.2"
+  },
+  "devDependencies": {
+    "lincd-cli": "^1.2",
+    "tsconfig-to-dual-package": "^1.2.0",
+    "typescript": "^5.7.3",
+    "typescript-plugin-css-modules": "^5.1.0"
+  },
+  "typesVersions": {
+    "*": {
+      "*": [
+        "lib/esm/*"
+      ]
+    }
+  },
+  "type": "commonjs"
+}

@@ -1,0 +1,66 @@
+:root {
+  --ld-auth-button-background: var(
+    --ld-auth-button-background,
+    var(--ld-app-color-primary)
+  );
+  --ld-auth-button-color: var(
+    --ld-auth-button-color,
+    var(--ld-app-color-on-primary)
+  );
+  --ld-auth-button-hover-background: var(
+    --ld-auth-button-hover-background,
+    var(--ld-app-color-primary-darker)
+  );
+}
+
+.root {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  min-width: min(450px, 90vw);
+  box-sizing: border-box;
+
+  .FormGroup {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    box-sizing: border-box;
+    width: 100%;
+
+    .ErrorMessage {
+      font-size: 12px;
+      color: var(--ld-auth-login-text-error);
+    }
+  }
+
+  .FormButton {
+    padding: 15px 10px;
+    background-color: var(--ld-auth-button-background);
+    color: var(--ld-auth-button-color);
+
+    &:hover {
+      background-color: var(--ld-auth-button-hover-background);
+    }
+  }
+
+  .Alert {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 15px;
+    background-color: #f74b4b;
+    border-radius: 6px;
+    width: 100%;
+
+    p {
+      font-size: 15px;
+    }
+
+    .CloseBtn {
+      cursor: pointer;
+      color: white;
+    }
+  }
+}

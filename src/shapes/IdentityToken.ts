@@ -1,0 +1,161 @@
+import { Shape } from '@_linked/core/shapes/Shape';
+import { linkedShape } from '../package.js';
+import { auth } from '../ontologies/auth.js';
+import { Server } from '@_linked/server-utils/utils/Server';
+import { UserAccount } from 'lincd-sioc/shapes/UserAccount';
+import { QResult } from '@_linked/core/queries/SelectQuery';
+import { UserAccountData } from '../types/auth.js';
+import { literalProperty, objectProperty } from '@_linked/core/shapes/SHACL';
+
+export type IdentityTokenResult = QResult<
+  IdentityToken,
+  {
+    subject: string;
+    token: string;
+    phoneIdentifier: string;
+    email: string;
+    account: UserAccountData;
+  }
+>;
+
+@linkedShape
+export class IdentityToken extends Shape {
+  static targetClass = auth.IdentityToken;
+
+  @literalProperty({
+    path: auth.subject,
+    maxCount: 1,
+  })
+  get subject(): string {
+    return '';
+  }
+
+  @literalProperty({
+    path: auth.token,
+    maxCount: 1,
+  })
+  get token(): string {
+    return '';
+  }
+
+  @literalProperty({
+    path: auth.phoneIdentifier,
+    maxCount: 1,
+  })
+  get phoneIdentifier(): string {
+    return '';
+  }
+
+  @literalProperty({
+    path: auth.email,
+    maxCount: 1,
+  })
+  get email(): string {
+    return '';
+  }
+
+  @objectProperty({
+    path: auth.account,
+    maxCount: 1,
+    shape: ['lincd-sioc', 'UserAccount'],
+    description: 'The account of the identity token.',
+  })
+  get account(): UserAccount {
+    return undefined as any;
+  }
+
+  /**
+   * Searches for an existing token that matches the provided email or subject.
+   * @param email The email to match against.
+   * @param sub The subject to match against.
+   * @returns The matching token, or undefined if no match was found.
+   */
+  static async getTokenByEmailOrSubject(
+    email: string,
+    sub: string
+  ): Promise<IdentityTokenResult> {
+    let existingToken: IdentityTokenResult;
+    if (email) {
+      existingToken = await IdentityToken.select((t) => {
+        return [
+          t.email,
+          t.subject,
+          t.token,
+          t.phoneIdentifier,
+          t.account.select((a) => {
+            return [a.accountOf];
+          }),
+        ];
+      })
+        .where((t) => {
+          return t.email.equals(email);
+        })
+        .one();
+    } else if (sub) {
+      existingToken = await IdentityToken.select((t) => {
+        return [
+          t.email,
+          t.subject,
+          t.token,
+          t.phoneIdentifier,
+          t.account.select((a) => {
+            return [a.accountOf];
+          }),
+        ];
+      })
+        .where((t) => {
+          return t.subject.equals(sub);
+        })
+        .one();
+    }
+    return existingToken;
+  }
+
+  static async getTokenByAccount(
+    account: UserAccountData
+  ): Promise<IdentityTokenResult> {
+    const existingToken = await IdentityToken.select((t) => {
+      return [
+        t.email,
+        t.subject,
+        t.token,
+        t.phoneIdentifier,
+        t.account.select((a) => {
+          return [a.accountOf];
+        }),
+      ];
+    })
+      .where((t) => {
+        return t.account.equals(account);
+      })
+      .one();
+
+    return existingToken;
+  }
+
+  /**
+   * checks if the account has an existing token.
+   *
+   * @param account UserAccount
+   * @returns boolean
+   */
+  static async hasToken(account: UserAccountData): Promise<boolean> {
+    const existingToken = await IdentityToken.select((t) => {
+      return [
+        t.email,
+        t.subject,
+        t.token,
+        t.phoneIdentifier,
+        t.account.select((a) => {
+          return [a.accountOf];
+        }),
+      ];
+    })
+      .where((t) => {
+        return t.account.equals(account);
+      })
+      .one();
+
+    return !!existingToken;
+  }
+}
