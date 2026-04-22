@@ -1,0 +1,11 @@
+
+node_modules/
+lib/
+yarn.lock
+*.log
+.DS_Store
+
+# Compiled artifacts from tsc should live in lib/, never under src/.
+# (.js alone is NOT ignored — some packages have legit .js test helpers/config.)
+src/**/*.d.ts
+src/**/*.js.map
