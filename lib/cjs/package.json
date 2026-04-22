@@ -11,13 +11,13 @@
     "url": ""
   },
   "version": "1.0.5",
-  "lincd": true,
+  "linkedPackage": true,
   "license": "ISC",
   "scripts": {
-    "start": "npm exec lincd dev",
-    "build": "yarn lincd build",
-    "prepublishOnly": "yarn lincd build production",
-    "postpublish": "npm exec lincd register"
+    "start": "npm exec linked dev",
+    "build": "yarn linked build",
+    "prepublishOnly": "yarn linked build production",
+    "postpublish": "npm exec linked register"
   },
   "keywords": [
     "lincd",
@@ -61,7 +61,7 @@
     "react-router-dom": "^6.14.2"
   },
   "devDependencies": {
-    "lincd-cli": "^1.2",
+    "@_linked/cli": "^1.2",
     "tsconfig-to-dual-package": "^1.2.0",
     "typescript": "^5.7.3",
     "typescript-plugin-css-modules": "^5.1.0"
