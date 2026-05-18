@@ -34,7 +34,7 @@ import { QResult } from '@_linked/core/queries/SelectQuery';
 import { AuthSession } from './types/auth.js';
 
 import connect_sqlite3 from 'connect-sqlite3';
-import { emailToWebID, webIDToEmail } from './utils/webID.js';
+import { emailToWebID } from './utils/webID.js';
 
 var SQLiteStore = connect_sqlite3(session);
 
@@ -475,11 +475,18 @@ export default class AuthBackendProvider extends BackendProvider {
 
     //find or create the account of the user
     const account = await this.getOrCreateAccount(user);
-    const email = webIDToEmail(user.id);
+
+    // Phase 1.1: WebID is one-way (UUID v5 of email). Recover email by
+    // looking up UserAccount.email keyed on the WebID rather than reversing.
+    const emailLookup = await UserAccount.select((ua) => [ua.email])
+      .where((ua) => ua.accountOf.equals({ id: user.id } as any))
+      .one()
+      .catch(() => null);
+    const email = (emailLookup as any)?.email ?? null;
 
     if (!email) {
       console.warn(
-        `Could not extract email from webID during password reset: ${user.id}`
+        `Could not look up email for webID during password reset: ${user.id}`
       );
       return {
         error: 'Could not determine email address from user account',
