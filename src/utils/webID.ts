@@ -53,4 +53,30 @@ export const webIDToEmail = (_webID: string): string | null => {
   return null;
 };
 
-// telephoneToWebID and webIDToTelephone removed — phone-based WebIDs are out of scope for v1.
+/**
+ * Public namespace UUID for phone-based WebIDs.
+ * Separate from WEBID_EMAIL_NAMESPACE so a phone string and the same string-as-email
+ * cannot collide to produce the same WebID.
+ * Fixed value — do NOT change; would invalidate all existing phone-based WebIDs.
+ */
+export const WEBID_PHONE_NAMESPACE = '8b2df419-565d-4aeb-9f77-2817a35214c1';
+
+/**
+ * Derives a deterministic, non-reversible WebID URI from a phone number.
+ *
+ * Algorithm: UUID v5 (SHA-1, RFC 4122) using WEBID_PHONE_NAMESPACE as the namespace
+ * and the normalized phone (digits-only, trimmed) as the name.
+ *
+ * Normalization strips all non-digit characters, so `+1 (202) 555-0100`,
+ * `12025550100`, and `+1-202-555-0100` all produce the same WebID.
+ */
+export const telephoneToWebID = (phone: string): string => {
+  if (!phone || typeof phone !== 'string') {
+    throw new Error('Phone must be a non-empty string');
+  }
+  const normalizedPhone = phone.trim().replace(/\D+/g, '');
+  if (!normalizedPhone) {
+    throw new Error('Phone must contain at least one digit');
+  }
+  return `${WEBID_PREFIX}/${uuidv5(normalizedPhone, WEBID_PHONE_NAMESPACE)}`;
+};
