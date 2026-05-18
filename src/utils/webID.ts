@@ -1,93 +1,56 @@
-const WEBID_PREFIX = 'https://webid.create.now';
+import { v5 as uuidv5 } from 'uuid';
+
+const WEBID_PREFIX = 'https://webid.email/id';
 
 /**
- * The email is converted to a webID by adding the email to the end of the webID prefix.
- * e.g. test@example.com -> https://webid.create.now/test@example.com
+ * Public namespace UUID for the webid.email WebID scheme.
+ * Used as the UUID v5 namespace when deriving a WebID from an email address.
+ * This value is fixed and published — both CN and the webid.email service use it.
+ * Do NOT change this value; doing so would invalidate all existing WebID URIs.
+ */
+export const WEBID_EMAIL_NAMESPACE = 'f498d4c9-555c-4ebb-9b4b-b6e16910f84c';
+
+/**
+ * Derives a deterministic, non-reversible WebID URI from an email address.
  *
- * @param email - the email to convert to a webID
- * @returns the WebID string
- * @throws Error if email is empty or invalid
+ * Algorithm: UUID v5 (SHA-1, RFC 4122) using WEBID_EMAIL_NAMESPACE as the namespace
+ * and the normalized (trimmed, lowercased) email as the name.
+ *
+ * The algorithm is public. Knowing the WebID does not reveal the email address.
+ * Both CN (dev mode) and the webid.email service (production) use the same algorithm,
+ * so WebIDs are identical across environments.
+ *
+ * e.g. alice@example.com -> https://webid.email/id/550e8400-e29b-41d4-a716-...
  */
 export const emailToWebID = (email: string): string => {
   if (!email || typeof email !== 'string') {
     throw new Error('Email must be a non-empty string');
   }
 
-  let trimmedEmail = email.trim();
-  if (!trimmedEmail) {
-    throw new Error('Email cannot be empty');
-  }
+  const normalizedEmail = email.trim().toLowerCase();
 
-  // Basic email validation (contains @ and at least one character before and after)
   if (
-    !trimmedEmail.includes('@') ||
-    trimmedEmail.indexOf('@') === 0 ||
-    trimmedEmail.indexOf('@') === trimmedEmail.length - 1
+    !normalizedEmail ||
+    !normalizedEmail.includes('@') ||
+    normalizedEmail.indexOf('@') === 0 ||
+    normalizedEmail.indexOf('@') === normalizedEmail.length - 1
   ) {
-    console.warn(`Potentially invalid email format: ${trimmedEmail}`);
+    console.warn(`Potentially invalid email format: ${normalizedEmail}`);
   }
 
-  // replace space with empty string to avoid invalid URI characters
-  trimmedEmail = trimmedEmail.replace(/\s+/g, '');
-
-  return `${WEBID_PREFIX}/${trimmedEmail.toLowerCase()}`;
+  return `${WEBID_PREFIX}/${uuidv5(normalizedEmail, WEBID_EMAIL_NAMESPACE)}`;
 };
 
 /**
- * The webID is converted to an email by removing the webID prefix and converting the remaining string to lowercase.
- * e.g. https://webid.create.now/test@example.com -> test@example.com
+ * @deprecated WebIDs are now opaque UUID v5 values — reversing a WebID to an email
+ * is no longer possible. Replace all callers with a UserAccount.email query:
+ *   const account = await UserAccount.select(a => [a.email]).where(a => a.accountOf.equals({ id: webID })).one();
+ *   const email = account?.email;
  *
- * @param webID - the webID to convert to an email
- * @returns the email string, or null if the webID is not email-based or invalid
+ * This stub returns null unconditionally so callers fail visibly rather than silently.
  */
-export const webIDToEmail = (webID: string): string | null => {
-  const match = webID.match(/^https:\/\/webid\.create\.now\/(.+)$/);
-  if (match && match[1]) {
-    const identifier = match[1].toLowerCase();
-    // Verify it's actually an email (contains @)
-    if (identifier.includes('@')) {
-      return identifier;
-    }
-  }
+export const webIDToEmail = (_webID: string): string | null => {
   return null;
 };
 
-/**
- * The telephone number is converted to a webID by adding the telephone number to the end of the webID prefix.
- * e.g. +1234567890 -> https://webid.create.now/+1234567890
- *
- * @param telephone - the telephone number to convert to a webID
- * @returns the WebID string
- * @throws Error if telephone is empty or invalid
- */
-export const telephoneToWebID = (telephone: string): string => {
-  if (!telephone || typeof telephone !== 'string') {
-    throw new Error('Telephone must be a non-empty string');
-  }
-
-  const trimmedTelephone = telephone.trim();
-  if (!trimmedTelephone) {
-    throw new Error('Telephone cannot be empty');
-  }
-
-  return `${WEBID_PREFIX}/${trimmedTelephone.toLowerCase()}`;
-};
-
-/**
- * The webID is converted to a telephone number by removing the webID prefix.
- * e.g. https://webid.create.now/+1234567890 -> +1234567890
- *
- * @param webID - the webID to convert to a telephone number
- * @returns the telephone string, or null if the webID is not telephone-based or invalid
- */
-export const webIDToTelephone = (webID: string): string | null => {
-  const match = webID.match(/^https:\/\/webid\.create\.now\/(.+)$/);
-  if (match && match[1]) {
-    const identifier = match[1];
-    // Verify it's actually a telephone (doesn't contain @)
-    if (!identifier.includes('@')) {
-      return identifier;
-    }
-  }
-  return null;
-};
+// telephoneToWebID and webIDToTelephone removed — phone-based WebIDs are out of scope for v1.
