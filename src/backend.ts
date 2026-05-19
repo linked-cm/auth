@@ -936,7 +936,10 @@ export default class AuthBackendProvider extends BackendProvider {
     refreshToken: string;
     email?: string;
   }) {
-    if (process.env.DEV_AUTH !== 'true') {
+    // DEV_AUTH gate — tolerate either string 'true' or boolean true.
+    // (env-cmd's spread-assign to process.env preserves boolean values.)
+    const devAuth = process.env.DEV_AUTH as unknown;
+    if (devAuth !== 'true' && devAuth !== true) {
       return { error: 'Dev signin disabled' };
     }
     const tokenResult = await verifyToken({
