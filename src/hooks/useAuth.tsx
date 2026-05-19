@@ -77,6 +77,12 @@ export const useAuth = <
     email: string,
     password: string
   ) => Promise<AuthenticationResponse>;
+  signinDev: (input: {
+    webId: string;
+    accessToken: string;
+    refreshToken: string;
+    email?: string;
+  }) => Promise<AuthenticationResponse>;
   //TODO: remove this and change it into a backend call
   signinOAuth: (provider: OAuthProvider, whatelse?: any) => Promise<any>;
   createAccount: (data) => Promise<any>;
@@ -284,6 +290,33 @@ function useProvideAuth(signinRoute: string = '') {
     );
   };
 
+  /**
+   * Dev-mode webid.email signin. The frontend Signin page opens a /auth/dev
+   * iframe, receives {webId, accessToken, refreshToken} via postMessage, and
+   * calls this. Backend AuthBackendProvider.signinDev validates the JWT,
+   * creates the UserAccount, returns the standard auth response.
+   *
+   * Phase 5.3 swaps the iframe URL to the real webid.email service —
+   * this hook unchanged.
+   */
+  const signinDev = (input: {
+    webId: string;
+    accessToken: string;
+    refreshToken: string;
+    email?: string;
+  }) => {
+    return Server.call(packageName, 'signinDev', input).then((response: any) => {
+      if (response && response.auth) {
+        return updateAuth({
+          auth: response.auth,
+          accessToken: response.accessToken,
+          refreshToken: response.refreshToken,
+        });
+      }
+      throw new Error(response?.error || "Couldn't sign in (dev)");
+    });
+  };
+
   const signinOAuth = (provider: string, source?: any) => {
     return Server.call(
       packageName,
@@ -403,6 +436,7 @@ function useProvideAuth(signinRoute: string = '') {
     signout,
     updateAuth,
     signinWithPassword,
+    signinDev,
     signinTemporary,
     createAccount,
     validateToken,

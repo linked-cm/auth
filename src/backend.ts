@@ -917,6 +917,75 @@ export default class AuthBackendProvider extends BackendProvider {
     );
   }
 
+  /**
+   * Dev-mode webid.email sign-in. Counterpart of GET /auth/dev:
+   * the iframe loaded from /auth/dev posts {webId, accessToken, refreshToken}
+   * to the parent. The frontend forwards that payload here via Server.call.
+   *
+   * We trust the access token because we signed it ourselves moments ago
+   * (DEV_AUTH=true path only — Phase 5.3 swaps in webid.email's JWT).
+   *
+   * After validating, find or create the Person + UserAccount, then return
+   * the standard signin response shape. Workspace provisioning is done by
+   * the frontend in a follow-up Server.call to avoid coupling @_linked/auth
+   * to CN-specific shapes.
+   */
+  async signinDev(input: {
+    webId: string;
+    accessToken: string;
+    refreshToken: string;
+    email?: string;
+  }) {
+    if (process.env.DEV_AUTH !== 'true') {
+      return { error: 'Dev signin disabled' };
+    }
+    const tokenResult = await verifyToken({
+      request: this.request,
+      token: input.accessToken,
+      refreshToken: input.refreshToken,
+      provider: this,
+    });
+    if (!tokenResult || (tokenResult as any).error) {
+      return { error: (tokenResult as any)?.error ?? 'Invalid token' };
+    }
+    const claims = (tokenResult as any).payload ?? tokenResult;
+    if (claims.sub && claims.sub !== input.webId) {
+      return { error: 'WebID does not match token subject' };
+    }
+    const email = (claims.email as string | undefined) ?? input.email;
+
+    // Find or create the Person whose IRI equals the WebID.
+    let person = await (this.userShape as any)
+      .select((p: any) => [p.id])
+      .where((p: any) => p.equals({ id: input.webId }))
+      .one()
+      .catch(() => null);
+    if (!person) {
+      person = await (this.userShape as any)
+        .create({
+          __id: input.webId,
+          givenName: email?.split('@')[0] ?? '',
+        })
+        .catch((err: Error) => {
+          console.error('Error creating Person for dev signin:', err);
+          return null;
+        });
+      if (!person) return { error: 'Could not create user' };
+    }
+
+    // Find or create the UserAccount for this Person/WebID.
+    const account = await this.getOrCreateAccount(person);
+    if (email && !(account as any).email) {
+      try {
+        await (this.accountShape as any).update({ email }).for(account);
+      } catch (err) {
+        console.warn('Could not set email on UserAccount:', err);
+      }
+    }
+
+    return Auth.onSigninSuccessful(this, person, account as UserAccountData);
+  }
+
   async removeAccount() {
     const auth = this.request.linkedAuth;
     if (!auth) {
