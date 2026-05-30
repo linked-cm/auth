@@ -958,10 +958,12 @@ export default class AuthBackendProvider extends BackendProvider {
     const email = (claims.email as string | undefined) ?? input.email;
 
     // Find or create the Person whose IRI equals the WebID.
+    // Select a real decorated property (givenName) — `.id` is the proxy's
+    // built-in getter, not a @literalProperty, so it can't be traced by
+    // FieldSet ("Unknown trace result type: undefined").
     let person = await (this.userShape as any)
-      .select((p: any) => [p.id])
-      .where((p: any) => p.equals({ id: input.webId }))
-      .one()
+      .select((p: any) => [p.givenName])
+      .for({ id: input.webId })
       .catch(() => null);
     if (!person) {
       person = await (this.userShape as any)
