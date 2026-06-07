@@ -34,7 +34,7 @@ import { QResult } from '@_linked/core/queries/SelectQuery';
 import { AuthSession } from './types/auth.js';
 
 import connect_sqlite3 from 'connect-sqlite3';
-import { emailToWebID, webIDToEmail } from './utils/webID.js';
+import { emailToWebID } from './utils/webID.js';
 
 var SQLiteStore = connect_sqlite3(session);
 
@@ -475,11 +475,18 @@ export default class AuthBackendProvider extends BackendProvider {
 
     //find or create the account of the user
     const account = await this.getOrCreateAccount(user);
-    const email = webIDToEmail(user.id);
+
+    // Phase 1.1: WebID is one-way (UUID v5 of email). Recover email by
+    // looking up UserAccount.email keyed on the WebID rather than reversing.
+    const emailLookup = await UserAccount.select((ua) => [ua.email])
+      .where((ua) => ua.accountOf.equals({ id: user.id } as any))
+      .one()
+      .catch(() => null);
+    const email = (emailLookup as any)?.email ?? null;
 
     if (!email) {
       console.warn(
-        `Could not extract email from webID during password reset: ${user.id}`
+        `Could not look up email for webID during password reset: ${user.id}`
       );
       return {
         error: 'Could not determine email address from user account',
@@ -908,6 +915,80 @@ export default class AuthBackendProvider extends BackendProvider {
       account as UserAccountData,
       true
     );
+  }
+
+  /**
+   * Dev-mode webid.email sign-in. Counterpart of GET /auth/dev:
+   * the iframe loaded from /auth/dev posts {webId, accessToken, refreshToken}
+   * to the parent. The frontend forwards that payload here via Server.call.
+   *
+   * We trust the access token because we signed it ourselves moments ago
+   * (DEV_AUTH=true path only — Phase 5.3 swaps in webid.email's JWT).
+   *
+   * After validating, find or create the Person + UserAccount, then return
+   * the standard signin response shape. Workspace provisioning is done by
+   * the frontend in a follow-up Server.call to avoid coupling @_linked/auth
+   * to CN-specific shapes.
+   */
+  async signinDev(input: {
+    webId: string;
+    accessToken: string;
+    refreshToken: string;
+    email?: string;
+  }) {
+    // DEV_AUTH gate — tolerate either string 'true' or boolean true.
+    // (env-cmd's spread-assign to process.env preserves boolean values.)
+    const devAuth = process.env.DEV_AUTH as unknown;
+    if (devAuth !== 'true' && devAuth !== true) {
+      return { error: 'Dev signin disabled' };
+    }
+    const tokenResult = await verifyToken({
+      request: this.request,
+      token: input.accessToken,
+      refreshToken: input.refreshToken,
+      provider: this,
+    });
+    if (!tokenResult || (tokenResult as any).error) {
+      return { error: (tokenResult as any)?.error ?? 'Invalid token' };
+    }
+    const claims = (tokenResult as any).payload ?? tokenResult;
+    if (claims.sub && claims.sub !== input.webId) {
+      return { error: 'WebID does not match token subject' };
+    }
+    const email = (claims.email as string | undefined) ?? input.email;
+
+    // Find or create the Person whose IRI equals the WebID.
+    // Select a real decorated property (givenName) — `.id` is the proxy's
+    // built-in getter, not a @literalProperty, so it can't be traced by
+    // FieldSet ("Unknown trace result type: undefined").
+    let person = await (this.userShape as any)
+      .select((p: any) => [p.givenName])
+      .for({ id: input.webId })
+      .catch(() => null);
+    if (!person) {
+      person = await (this.userShape as any)
+        .create({
+          __id: input.webId,
+          givenName: email?.split('@')[0] ?? '',
+        })
+        .catch((err: Error) => {
+          console.error('Error creating Person for dev signin:', err);
+          return null;
+        });
+      if (!person) return { error: 'Could not create user' };
+    }
+
+    // Find or create the UserAccount for this Person/WebID.
+    const account = await this.getOrCreateAccount(person);
+    if (email && !(account as any).email) {
+      try {
+        await (this.accountShape as any).update({ email }).for(account);
+      } catch (err) {
+        console.warn('Could not set email on UserAccount:', err);
+      }
+    }
+
+    return Auth.onSigninSuccessful(this, person, account as UserAccountData);
   }
 
   async removeAccount() {
