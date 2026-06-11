@@ -22,6 +22,7 @@ import { RefreshToken } from './shapes/RefreshToken.js';
 import {
   emitAccountWillBeRemovedEvent,
   onAccountWillBeRemoved,
+  offAccountWillBeRemoved,
 } from './utils/events.js';
 import AppleHelper from './helpers/apple.js';
 import GoogleHelper from './helpers/google.js';
@@ -53,13 +54,16 @@ export default class AuthBackendProvider extends BackendProvider {
   public accountShape: typeof UserAccount = UserAccount;
   public userShape: typeof SchemaPerson = SchemaPerson;
   protected zeptoMail: SendMailClient;
+  // Plan-011 — store the listener so dispose() can unsubscribe it.
+  // Anonymous inline callbacks would leak across HMR reloads.
+  private accountRemovedListener?: (account: UserAccountData) => Promise<void>;
 
   async setupBeforeControllers() {
     //if defined, take the values from the environment variables to define the shapes for the account and user
     await this.assignEnvPathToField('AUTH_ACCOUNT_TYPE', 'accountShape');
     await this.assignEnvPathToField('AUTH_USER_TYPE', 'userShape');
 
-    onAccountWillBeRemoved(async (account: UserAccountData) => {
+    this.accountRemovedListener = async (account: UserAccountData) => {
       const refreshTokens = await RefreshToken.select((rt) => [
         rt.account,
       ]).where((rt) => rt.account.equals(account));
@@ -68,7 +72,8 @@ export default class AuthBackendProvider extends BackendProvider {
           await RefreshToken.delete(refreshToken);
         }
       }
-    });
+    };
+    onAccountWillBeRemoved(this.accountRemovedListener);
 
     // set the user and account shapes for auth
     Auth.userType = this.userShape;
@@ -82,13 +87,16 @@ export default class AuthBackendProvider extends BackendProvider {
 
     // FOR initial page requests we send the JWT token as a cookie (Stored in the browser)
     // see getToken for how we use the cookie and set this.request.linkedAuth
-    this.server.use(cookieParser());
+    // registerRoute tracks these so dispose() can remove them on HMR.
+    this.registerRoute('use', '/', cookieParser());
 
     // For API requests, we send a token as the Bearer header
     // It gets parsed by this middleware and the result is that
     // on getToken we catch first every request and check the headers or cookies
     // and if has, we set into this.request.linkedAuth
-    this.server.use(
+    this.registerRoute(
+      'use',
+      '/',
       expressjwt({
         secret: process.env.JWT_SECRET || 'jwt-secret', // need to set this environment variable
         algorithms: ['HS256'],
@@ -134,7 +142,9 @@ export default class AuthBackendProvider extends BackendProvider {
       secret = crypto.createHash('md5').update(filename__).digest('hex');
     }
 
-    this.server.use(
+    this.registerRoute(
+      'use',
+      '/',
       session({
         secret: secret,
         name: '@_linked/auth',
@@ -147,6 +157,16 @@ export default class AuthBackendProvider extends BackendProvider {
         }),
       })
     );
+  }
+
+  async dispose() {
+    // Plan-011 — remove the middleware we tracked above + unsubscribe
+    // the account-removed listener so HMR doesn't leak handlers.
+    this.disposeRoutes();
+    if (this.accountRemovedListener) {
+      offAccountWillBeRemoved(this.accountRemovedListener);
+      this.accountRemovedListener = undefined;
+    }
   }
 
   async validateRequestToken(request, accessTokenExpired: boolean = false) {
