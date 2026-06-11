@@ -17,13 +17,13 @@ import {
   setAuthToken,
 } from '../utils/token.js';
 import { useAppContext } from '@_linked/server-utils/components/AppContext';
-import {
+import type {
   OAuthProvider,
   AuthenticationResponse,
   AuthSession,
 } from '../types/auth.js';
 import { QResult } from '@_linked/core/queries/SelectQuery';
-import { UserData, UserAccountData } from '../types/auth.js';
+import type { UserData, UserAccountData } from '../types/auth.js';
 import { useNavigate } from 'react-router-dom';
 
 type Person = FoafPerson | SchemaPerson;

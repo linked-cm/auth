@@ -4,7 +4,7 @@ import { auth } from '../ontologies/auth.js';
 import { Server } from '@_linked/server-utils/utils/Server';
 import { UserAccount } from 'lincd-sioc/shapes/UserAccount';
 import { QResult } from '@_linked/core/queries/SelectQuery';
-import { UserAccountData } from '../types/auth.js';
+import type { UserAccountData } from '../types/auth.js';
 import { literalProperty, objectProperty } from '@_linked/core/shapes/SHACL';
 
 export type IdentityTokenResult = QResult<

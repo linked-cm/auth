@@ -7,7 +7,7 @@ import { useStyles } from '@_linked/react/utils/Hooks';
 import { Server } from '@_linked/server-utils/utils/Server';
 import { packageName } from '../package.js';
 import { useAuth } from '../hooks/useAuth.js';
-import { AuthenticationResponse } from '../types/auth.js';
+import type { AuthenticationResponse } from '../types/auth.js';
 import { useTranslate } from '@tolgee/react';
 
 interface CreateAccountFormProps {

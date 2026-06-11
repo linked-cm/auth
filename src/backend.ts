@@ -10,7 +10,7 @@ import { AuthCredential } from './shapes/AuthCredential.js';
 import { auth } from './ontologies/auth.js';
 import { expressjwt, Request } from 'express-jwt';
 import cookieParser from 'cookie-parser';
-import {
+import type {
   AuthSessionPayload,
   AuthenticationResult,
   CreateAccount,
@@ -32,7 +32,7 @@ import path, { dirname, basename } from 'path';
 import crypto from 'node:crypto';
 import { LinkedEmail } from '@_linked/server-utils/utils/LinkedEmail';
 import { QResult } from '@_linked/core/queries/SelectQuery';
-import { AuthSession } from './types/auth.js';
+import type { AuthSession } from './types/auth.js';
 
 import connect_sqlite3 from 'connect-sqlite3';
 import { emailToWebID } from './utils/webID.js';

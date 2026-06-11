@@ -3,7 +3,7 @@ import { linkedShape } from '../package.js';
 import { auth } from '../ontologies/auth.js';
 import { UserAccount } from 'lincd-sioc/shapes/UserAccount';
 import { literalProperty, objectProperty } from '@_linked/core/shapes/SHACL';
-import { UserAccountData } from '../types/auth.js';
+import type { UserAccountData } from '../types/auth.js';
 
 @linkedShape
 export class RefreshToken extends Shape {

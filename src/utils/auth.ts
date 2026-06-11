@@ -3,7 +3,7 @@ import { Person, Person as SchemaPerson } from '@_linked/schema/shapes/Person';
 import { Person as FoafPerson } from 'foaf/shapes/Person';
 import { Server } from '@_linked/server-utils/utils/Server';
 import { ENFORCE_SIGNED_IN } from '../hooks/useAuth.js';
-import {
+import type {
   AuthenticationResult,
   AuthSession,
   EnforceSignedIn,
