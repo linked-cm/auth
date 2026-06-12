@@ -1,6 +1,6 @@
 import { Person as FoafPerson } from 'foaf/shapes/Person';
 import { Person as SchemaPerson } from '@_linked/schema/shapes/Person';
-import { UserAccount } from 'lincd-sioc/shapes/UserAccount';
+import { UserAccount } from '@_linked/sioc/shapes/UserAccount';
 import { BackendProvider } from '@_linked/server-utils/utils/BackendProvider';
 import session from 'express-session';
 

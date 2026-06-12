@@ -2,7 +2,7 @@ import { Shape } from '@_linked/core/shapes/Shape';
 import { linkedShape } from '../package.js';
 import { auth } from '../ontologies/auth.js';
 import { Server } from '@_linked/server-utils/utils/Server';
-import { UserAccount } from 'lincd-sioc/shapes/UserAccount';
+import { UserAccount } from '@_linked/sioc/shapes/UserAccount';
 import { QResult } from '@_linked/core/queries/SelectQuery';
 import type { UserAccountData } from '../types/auth.js';
 import { literalProperty, objectProperty } from '@_linked/core/shapes/SHACL';
@@ -57,7 +57,7 @@ export class IdentityToken extends Shape {
   @objectProperty({
     path: auth.account,
     maxCount: 1,
-    shape: ['lincd-sioc', 'UserAccount'],
+    shape: ['@_linked/sioc', 'UserAccount'],
     description: 'The account of the identity token.',
   })
   get account(): UserAccount {

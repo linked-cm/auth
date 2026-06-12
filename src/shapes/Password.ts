@@ -2,7 +2,7 @@ import { Shape } from '@_linked/core/shapes/Shape';
 import { linkedShape } from '../package.js';
 import { auth } from '../ontologies/auth.js';
 import { literalProperty, objectProperty } from '@_linked/core/shapes/SHACL';
-import { UserAccount } from 'lincd-sioc/shapes/UserAccount';
+import { UserAccount } from '@_linked/sioc/shapes/UserAccount';
 
 // NOTE: after migration to new authentication system, this shape is not used anymore
 @linkedShape
@@ -11,7 +11,7 @@ export class Password extends Shape {
 
   @objectProperty({
     path: auth.account,
-    shape: ['lincd-sioc', 'UserAccount'],
+    shape: ['@_linked/sioc', 'UserAccount'],
     maxCount: 1,
   })
   get account(): UserAccount {

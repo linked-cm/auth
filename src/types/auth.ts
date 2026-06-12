@@ -1,7 +1,7 @@
 import { JwtPayload } from 'jsonwebtoken';
 import { Person as FoafPerson } from 'foaf/shapes/Person';
 import { Person as SchemaPerson } from '@_linked/schema/shapes/Person';
-import { UserAccount } from 'lincd-sioc/shapes/UserAccount';
+import { UserAccount } from '@_linked/sioc/shapes/UserAccount';
 import { QResult } from '@_linked/core/queries/SelectQuery';
 
 /**
