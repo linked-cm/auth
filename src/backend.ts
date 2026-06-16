@@ -977,26 +977,16 @@ export default class AuthBackendProvider extends BackendProvider {
     }
     const email = (claims.email as string | undefined) ?? input.email;
 
-    // Find or create the Person whose IRI equals the WebID.
-    // Select a real decorated property (givenName) — `.id` is the proxy's
-    // built-in getter, not a @literalProperty, so it can't be traced by
-    // FieldSet ("Unknown trace result type: undefined").
-    let person = await (this.userShape as any)
-      .select((p: any) => [p.givenName])
-      .for({ id: input.webId })
-      .catch(() => null);
-    if (!person) {
-      person = await (this.userShape as any)
-        .create({
-          __id: input.webId,
-          givenName: email?.split('@')[0] ?? '',
-        })
-        .catch((err: Error) => {
-          console.error('Error creating Person for dev signin:', err);
-          return null;
-        });
-      if (!person) return { error: 'Could not create user' };
-    }
+    // Dev signin does NOT persist a Person (no properties, no rdf:type) — this
+    // mirrors production, where the WebID profile is hosted by the identity
+    // provider (e.g. webid.email), NOT the app's cn-main dataset. We generate +
+    // use the WebID; a lightweight in-memory shape (id only) gives the
+    // UserAccount link + session a stable reference without writing any triples.
+    // The user's display name comes from the token claims / UserAccount, not a
+    // stored Person. (Person routes via a context-aware view in
+    // linked.backend.storage.js: app-context → app dataset; identity reads with
+    // no context → cn-main, which is simply empty now.)
+    const person = new (this.userShape as any)({ id: input.webId });
 
     // Find or create the UserAccount for this Person/WebID.
     const account = await this.getOrCreateAccount(person);
