@@ -1,5 +1,11 @@
 # @\_linked/auth
 
+## 1.2.1
+
+### Patch Changes
+
+- [#7](https://github.com/linked-cm/auth/pull/7) [`406f7ef`](https://github.com/linked-cm/auth/commit/406f7ef365bbd5069a3e5cb68724169032aecebd) Thanks [@flyon](https://github.com/flyon)! - loadData: ESM-only JSON import — drop the dead CJS branch, add the `{ with: { type: 'json' } }` import attribute.
+
 ## 1.2.0
 
 ### Minor Changes
