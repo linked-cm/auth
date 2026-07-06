@@ -12,16 +12,14 @@
   },
   "version": "1.1.0",
   "linkedPackage": true,
-  "main": "lib/cjs/index.js",
-  "types": "./index.d.ts",
+  "main": "lib/esm/index.js",
+  "types": "./lib/esm/index.d.ts",
   "license": "ISC",
   "scripts": {
     "start": "npm exec linked dev",
-    "build": "rimraf ./lib && yarn build-esm && yarn build-cjs && yarn copy-to-lib && yarn dual-package",
+    "build": "rimraf ./lib && yarn build-esm && yarn copy-to-lib",
     "build-esm": "echo \"compiling ESM\" && rimraf ./lib/esm && (yarn tsc -p tsconfig-esm.json || echo 'tsc returned non-zero; .js still emitted via noEmitOnError default')",
-    "build-cjs": "echo \"compiling CJS\" && rimraf ./lib/cjs && (yarn tsc -p tsconfig-cjs.json || echo 'tsc returned non-zero; .js still emitted via noEmitOnError default')",
-    "copy-to-lib": "echo 'copying CSS + JSON assets to lib folder' && yarn copyfiles -u 1 'src/**/*.css' 'src/**/*.json' lib/esm && yarn copyfiles -u 1 'src/**/*.css' 'src/**/*.json' lib/cjs",
-    "dual-package": "echo 'adding package.json to each lib folder for dual output support' && yarn tsconfig-to-dual-package ./tsconfig-cjs.json ./tsconfig-esm.json"
+    "copy-to-lib": "echo 'copying CSS + JSON assets to lib folder' && yarn copyfiles -u 1 'src/**/*.css' 'src/**/*.json' lib/esm"
   },
   "keywords": [
     "lincd",
@@ -80,20 +78,17 @@
     ".": {
       "types": "./lib/esm/index.d.ts",
       "development": "./src/index.ts",
-      "import": "./lib/esm/index.js",
-      "require": "./lib/cjs/index.js"
+      "import": "./lib/esm/index.js"
     },
     "./*.js": {
       "types": "./lib/esm/*.d.ts",
       "development": "./src/*.ts",
-      "import": "./lib/esm/*.js",
-      "require": "./lib/cjs/*.js"
+      "import": "./lib/esm/*.js"
     },
     "./*": {
       "types": "./lib/esm/*.d.ts",
       "development": "./src/*.ts",
-      "import": "./lib/esm/*.js",
-      "require": "./lib/cjs/*.js"
+      "import": "./lib/esm/*.js"
     }
   },
   "publishConfig": {
@@ -105,5 +100,6 @@
         "lib/esm/*"
       ]
     }
-  }
+  },
+  "type": "module"
 }
