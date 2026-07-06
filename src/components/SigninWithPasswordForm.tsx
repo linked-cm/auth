@@ -12,7 +12,7 @@ import { Button } from 'lincd-mui-base/components/Button';
 import { packageName } from '../package.js';
 import { useSearchParams } from 'react-router-dom';
 import { Authentication } from '../shapes/Authentication.js';
-import { AuthenticationResponse, AuthSession } from '../types/auth.js';
+import type { AuthenticationResponse, AuthSession } from '../types/auth.js';
 import { asset } from '@_linked/core/utils/LinkedFileStorage';
 import { useTranslate } from '@tolgee/react';
 

@@ -18,10 +18,22 @@ export function onNewUser<PersonType, AccountType>(
   authEvents.on(NEW_USER_EVENT, callback);
 }
 
+export function offNewUser<PersonType, AccountType>(
+  callback: (person: PersonType, account: AccountType) => void
+) {
+  authEvents.off(NEW_USER_EVENT, callback);
+}
+
 export function onAccountWillBeRemoved<AccountType>(
   callback: (account: AccountType) => void
 ) {
   authEvents.on(ACCOUNT_REMOVED_EVENT, callback);
+}
+
+export function offAccountWillBeRemoved<AccountType>(
+  callback: (account: AccountType) => void
+) {
+  authEvents.off(ACCOUNT_REMOVED_EVENT, callback);
 }
 export function emitAccountWillBeRemovedEvent(account) {
   return new Promise<void>((resolve) => {

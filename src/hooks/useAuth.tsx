@@ -4,7 +4,7 @@ import { packageName } from '../package.js';
 import { Authentication } from '../shapes/Authentication.js';
 import { Person as FoafPerson } from 'foaf/shapes/Person';
 import { Person as SchemaPerson } from '@_linked/schema/shapes/Person';
-import { UserAccount } from 'lincd-sioc/shapes/UserAccount';
+import { UserAccount } from '@_linked/sioc/shapes/UserAccount';
 import { Shape } from '@_linked/core/shapes/Shape';
 import { useQueryContext } from '@_linked/react/utils/useQueryContext';
 import {
@@ -17,13 +17,13 @@ import {
   setAuthToken,
 } from '../utils/token.js';
 import { useAppContext } from '@_linked/server-utils/components/AppContext';
-import {
+import type {
   OAuthProvider,
   AuthenticationResponse,
   AuthSession,
 } from '../types/auth.js';
 import { QResult } from '@_linked/core/queries/SelectQuery';
-import { UserData, UserAccountData } from '../types/auth.js';
+import type { UserData, UserAccountData } from '../types/auth.js';
 import { useNavigate } from 'react-router-dom';
 
 type Person = FoafPerson | SchemaPerson;

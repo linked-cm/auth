@@ -1,5 +1,5 @@
 import jwt, { SignOptions } from 'jsonwebtoken';
-import { AuthSession, AuthSessionPayload } from '../types/auth.js';
+import type { AuthSession, AuthSessionPayload } from '../types/auth.js';
 import { RefreshToken } from '../shapes/RefreshToken.js';
 import { ACCESS_TOKEN_EXPIRES, REFRESH_TOKEN_EXPIRES } from './token.js';
 import { BackendProvider } from '@_linked/server-utils/utils/BackendProvider';

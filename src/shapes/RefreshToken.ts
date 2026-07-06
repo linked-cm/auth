@@ -1,9 +1,9 @@
 import { Shape } from '@_linked/core/shapes/Shape';
 import { linkedShape } from '../package.js';
 import { auth } from '../ontologies/auth.js';
-import { UserAccount } from 'lincd-sioc/shapes/UserAccount';
+import { UserAccount } from '@_linked/sioc/shapes/UserAccount';
 import { literalProperty, objectProperty } from '@_linked/core/shapes/SHACL';
-import { UserAccountData } from '../types/auth.js';
+import type { UserAccountData } from '../types/auth.js';
 
 @linkedShape
 export class RefreshToken extends Shape {
@@ -19,7 +19,7 @@ export class RefreshToken extends Shape {
 
   @objectProperty({
     path: auth.account,
-    shape: ['lincd-sioc', 'UserAccount'],
+    shape: ['@_linked/sioc', 'UserAccount'],
     maxCount: 1,
   })
   get account(): UserAccount {

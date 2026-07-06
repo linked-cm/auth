@@ -1,6 +1,6 @@
 import { Person as FoafPerson } from 'foaf/shapes/Person';
 import { Person as SchemaPerson } from '@_linked/schema/shapes/Person';
-import { UserAccount } from 'lincd-sioc/shapes/UserAccount';
+import { UserAccount } from '@_linked/sioc/shapes/UserAccount';
 import { BackendProvider } from '@_linked/server-utils/utils/BackendProvider';
 import session from 'express-session';
 
@@ -10,7 +10,7 @@ import { AuthCredential } from './shapes/AuthCredential.js';
 import { auth } from './ontologies/auth.js';
 import { expressjwt, Request } from 'express-jwt';
 import cookieParser from 'cookie-parser';
-import {
+import type {
   AuthSessionPayload,
   AuthenticationResult,
   CreateAccount,
@@ -22,6 +22,7 @@ import { RefreshToken } from './shapes/RefreshToken.js';
 import {
   emitAccountWillBeRemovedEvent,
   onAccountWillBeRemoved,
+  offAccountWillBeRemoved,
 } from './utils/events.js';
 import AppleHelper from './helpers/apple.js';
 import GoogleHelper from './helpers/google.js';
@@ -31,7 +32,7 @@ import path, { dirname, basename } from 'path';
 import crypto from 'node:crypto';
 import { LinkedEmail } from '@_linked/server-utils/utils/LinkedEmail';
 import { QResult } from '@_linked/core/queries/SelectQuery';
-import { AuthSession } from './types/auth.js';
+import type { AuthSession } from './types/auth.js';
 
 import connect_sqlite3 from 'connect-sqlite3';
 import { emailToWebID } from './utils/webID.js';
@@ -53,13 +54,16 @@ export default class AuthBackendProvider extends BackendProvider {
   public accountShape: typeof UserAccount = UserAccount;
   public userShape: typeof SchemaPerson = SchemaPerson;
   protected zeptoMail: SendMailClient;
+  // Plan-011 — store the listener so dispose() can unsubscribe it.
+  // Anonymous inline callbacks would leak across HMR reloads.
+  private accountRemovedListener?: (account: UserAccountData) => Promise<void>;
 
   async setupBeforeControllers() {
     //if defined, take the values from the environment variables to define the shapes for the account and user
     await this.assignEnvPathToField('AUTH_ACCOUNT_TYPE', 'accountShape');
     await this.assignEnvPathToField('AUTH_USER_TYPE', 'userShape');
 
-    onAccountWillBeRemoved(async (account: UserAccountData) => {
+    this.accountRemovedListener = async (account: UserAccountData) => {
       const refreshTokens = await RefreshToken.select((rt) => [
         rt.account,
       ]).where((rt) => rt.account.equals(account));
@@ -68,7 +72,8 @@ export default class AuthBackendProvider extends BackendProvider {
           await RefreshToken.delete(refreshToken);
         }
       }
-    });
+    };
+    onAccountWillBeRemoved(this.accountRemovedListener);
 
     // set the user and account shapes for auth
     Auth.userType = this.userShape;
@@ -82,13 +87,16 @@ export default class AuthBackendProvider extends BackendProvider {
 
     // FOR initial page requests we send the JWT token as a cookie (Stored in the browser)
     // see getToken for how we use the cookie and set this.request.linkedAuth
-    this.server.use(cookieParser());
+    // registerRoute tracks these so dispose() can remove them on HMR.
+    this.registerRoute('use', '/', cookieParser());
 
     // For API requests, we send a token as the Bearer header
     // It gets parsed by this middleware and the result is that
     // on getToken we catch first every request and check the headers or cookies
     // and if has, we set into this.request.linkedAuth
-    this.server.use(
+    this.registerRoute(
+      'use',
+      '/',
       expressjwt({
         secret: process.env.JWT_SECRET || 'jwt-secret', // need to set this environment variable
         algorithms: ['HS256'],
@@ -134,7 +142,9 @@ export default class AuthBackendProvider extends BackendProvider {
       secret = crypto.createHash('md5').update(filename__).digest('hex');
     }
 
-    this.server.use(
+    this.registerRoute(
+      'use',
+      '/',
       session({
         secret: secret,
         name: '@_linked/auth',
@@ -147,6 +157,16 @@ export default class AuthBackendProvider extends BackendProvider {
         }),
       })
     );
+  }
+
+  async dispose() {
+    // Plan-011 — remove the middleware we tracked above + unsubscribe
+    // the account-removed listener so HMR doesn't leak handlers.
+    this.disposeRoutes();
+    if (this.accountRemovedListener) {
+      offAccountWillBeRemoved(this.accountRemovedListener);
+      this.accountRemovedListener = undefined;
+    }
   }
 
   async validateRequestToken(request, accessTokenExpired: boolean = false) {
@@ -957,26 +977,16 @@ export default class AuthBackendProvider extends BackendProvider {
     }
     const email = (claims.email as string | undefined) ?? input.email;
 
-    // Find or create the Person whose IRI equals the WebID.
-    // Select a real decorated property (givenName) — `.id` is the proxy's
-    // built-in getter, not a @literalProperty, so it can't be traced by
-    // FieldSet ("Unknown trace result type: undefined").
-    let person = await (this.userShape as any)
-      .select((p: any) => [p.givenName])
-      .for({ id: input.webId })
-      .catch(() => null);
-    if (!person) {
-      person = await (this.userShape as any)
-        .create({
-          __id: input.webId,
-          givenName: email?.split('@')[0] ?? '',
-        })
-        .catch((err: Error) => {
-          console.error('Error creating Person for dev signin:', err);
-          return null;
-        });
-      if (!person) return { error: 'Could not create user' };
-    }
+    // Dev signin does NOT persist a Person (no properties, no rdf:type) — this
+    // mirrors production, where the WebID profile is hosted by the identity
+    // provider (e.g. webid.email), NOT the app's cn-main dataset. We generate +
+    // use the WebID; a lightweight in-memory shape (id only) gives the
+    // UserAccount link + session a stable reference without writing any triples.
+    // The user's display name comes from the token claims / UserAccount, not a
+    // stored Person. (Person routes via a context-aware view in
+    // linked.backend.storage.js: app-context → app dataset; identity reads with
+    // no context → cn-main, which is simply empty now.)
+    const person = new (this.userShape as any)({ id: input.webId });
 
     // Find or create the UserAccount for this Person/WebID.
     const account = await this.getOrCreateAccount(person);
