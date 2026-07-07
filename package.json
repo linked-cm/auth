@@ -77,17 +77,14 @@
   "exports": {
     ".": {
       "types": "./lib/esm/index.d.ts",
-      "development": "./src/index.ts",
       "import": "./lib/esm/index.js"
     },
     "./*.js": {
       "types": "./lib/esm/*.d.ts",
-      "development": "./src/*.ts",
       "import": "./lib/esm/*.js"
     },
     "./*": {
       "types": "./lib/esm/*.d.ts",
-      "development": "./src/*.ts",
       "import": "./lib/esm/*.js"
     }
   },
