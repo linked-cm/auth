@@ -1,5 +1,11 @@
 # @\_linked/auth
 
+## 1.2.2
+
+### Patch Changes
+
+- [#9](https://github.com/linked-cm/auth/pull/9) [`2fa7118`](https://github.com/linked-cm/auth/commit/2fa7118a64e3689f901c0cc8186bbe6010690d90) Thanks [@flyon](https://github.com/flyon)! - Remove the `development` export condition (pointed at `src`, which isn't shipped to npm). Monorepo dev resolves workspace source via the cli Vite plugin; standalone resolves `import → lib`. No consumer-visible change.
+
 ## 1.2.1
 
 ### Patch Changes
