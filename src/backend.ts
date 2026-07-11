@@ -16,6 +16,7 @@ import type {
   CreateAccount,
   OAuthProvider,
   UserAccountData,
+  UserData,
 } from './types/auth.js';
 import { createToken, verifyToken } from './utils/jwt.js';
 import { RefreshToken } from './shapes/RefreshToken.js';
@@ -977,16 +978,9 @@ export default class AuthBackendProvider extends BackendProvider {
     }
     const email = (claims.email as string | undefined) ?? input.email;
 
-    // Dev signin does NOT persist a Person (no properties, no rdf:type) — this
-    // mirrors production, where the WebID profile is hosted by the identity
-    // provider (e.g. webid.email), NOT the app's cn-main dataset. We generate +
-    // use the WebID; a lightweight in-memory shape (id only) gives the
-    // UserAccount link + session a stable reference without writing any triples.
-    // The user's display name comes from the token claims / UserAccount, not a
-    // stored Person. (Person routes via a context-aware view in
-    // linked.backend.storage.js: app-context → app dataset; identity reads with
-    // no context → cn-main, which is simply empty now.)
-    const person = new (this.userShape as any)({ id: input.webId });
+    // Dev signin doesn't persist a Person — the WebID profile is hosted by the
+    // identity provider (e.g. webid.email). Plain identity data, never a live Shape.
+    const person = { id: input.webId } as UserData;
 
     // Find or create the UserAccount for this Person/WebID.
     const account = await this.getOrCreateAccount(person);

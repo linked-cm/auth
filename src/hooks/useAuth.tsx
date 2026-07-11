@@ -17,7 +17,6 @@ import {
   setAuthToken,
 } from '../utils/token.js';
 import { useAppContext } from '@_linked/server-utils/components/AppContext';
-import { JSONParser } from '@_linked/server-utils/utils/JSONParser';
 import type {
   OAuthProvider,
   AuthenticationResponse,
@@ -31,20 +30,6 @@ type Person = FoafPerson | SchemaPerson;
 export const ENFORCE_SIGNED_IN = 'ENFORCE_SIGNIN';
 
 const AuthContext = createContext(null);
-
-/**
- * A user/account shape that crossed the SSR/JSON boundary (the hydration payload
- * or a JWT/session) arrives as JSONWriter's serialized `{__s: nodeShapeURI, u:
- * instanceURI}` form — a plain object with no working `.id`. Revive it into a real
- * Shape so `user.id` / `userAccount.id` resolve (needed by getUserProjects, the
- * query context, workspace auto-select, …). Live Shape instances (backend SSR) have
- * no own `__s` key and pass through untouched.
- */
-function reviveShapeRef<T>(value: T): T {
-  return value && typeof value === 'object' && '__s' in (value as any)
-    ? (JSONParser.parseObject(value) as T)
-    : value;
-}
 
 interface AuthProviderProps {
   children: React.ReactNode;
@@ -126,8 +111,8 @@ function useProvideAuth(signinRoute: string = '') {
 
   // console.log(`defaultAuth: `, JSON.stringify(defaultAuth));
   let account, person;
-  account = reviveShapeRef(defaultAuth?.userAccount);
-  person = reviveShapeRef(defaultAuth?.user);
+  account = defaultAuth?.userAccount;
+  person = defaultAuth?.user;
 
   //TODO? keep loadingUserData:boolean state
   //in useEffect, if userData state empty and/or if token changes
@@ -230,8 +215,8 @@ function useProvideAuth(signinRoute: string = '') {
     setAuthState(auth);
 
     // update the user and userAccount before render
-    setUser(reviveShapeRef(auth.user));
-    setUserAccount(reviveShapeRef(auth.userAccount));
+    setUser(auth.user);
+    setUserAccount(auth.userAccount);
 
     // save token to storage only if provided
     if (accessToken) {
