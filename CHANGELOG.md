@@ -1,5 +1,11 @@
 # @\_linked/auth
 
+## 1.2.3
+
+### Patch Changes
+
+- [#12](https://github.com/linked-cm/auth/pull/12) [`ef1c23b`](https://github.com/linked-cm/auth/commit/ef1c23b12e7b49481d6f5124e2404279028c63fa) Thanks [@flyon](https://github.com/flyon)! - Dev signin now builds the session user as plain identity data (`{ id }`, a QResult) instead of a live `Shape` instance. A live Shape crossed the SSR/JWT serialization boundary and reached the client as an unusable `{__s, u}` reference (undefined `.id`), breaking auth-dependent UI (e.g. the workspace name showing `?`). Also removes the interim `reviveShapeRef` workaround.
+
 ## 1.2.2
 
 ### Patch Changes
