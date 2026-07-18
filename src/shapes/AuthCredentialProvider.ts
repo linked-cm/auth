@@ -28,6 +28,33 @@ export class AuthCredentialProvider extends ShapeProvider {
   }
 
   /**
+   * Returns true if the current signed-in user has a stored password hash.
+   * This is the correct check for whether email/password login is available.
+   */
+  async userHasPassword() {
+    const user: QResult<Person> = this.request?.linkedAuth?.user;
+    if (!user) {
+      console.warn('No user authenticated');
+      return false;
+    }
+    return this.hasPassword(user);
+  }
+
+  /**
+   * Returns true if the given person has an AuthCredential with a password hash.
+   * This intentionally ignores credential rows created for OAuth-only users.
+   */
+  async hasPassword(person: QResult<Person>) {
+    const credential = await AuthCredential.select((cred) => {
+      return [cred.passwordHash];
+    })
+      .where((cred) => cred.credentialOf.equals(person))
+      .one();
+
+    return Boolean(credential?.passwordHash);
+  }
+
+  /**
    * Create a new password for the user
    *
    * @param password

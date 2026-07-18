@@ -757,22 +757,50 @@ export default class AuthBackendProvider extends BackendProvider {
       return { error: 'could not find email in OAuth response' };
     }
 
+    email = String(email).trim().toLowerCase();
+
+    let expectedWebID: string;
+    try {
+      expectedWebID = emailToWebID(email);
+    } catch (error) {
+      console.error(
+        `Invalid email format during OAuth signin: ${email}`,
+        error
+      );
+      return { error: 'Invalid email format' };
+    }
+
+    // Do not silently create a second identity when this email is already
+    // attached to a non-canonical WebID (for example, a temporary/event
+    // registration). Account linking requires its own verified flow.
+    const existingAccountByEmail = await UserAccount.select((ua) => [ua.email])
+      .where((ua) => ua.email.equals(email))
+      .one();
+    if (existingAccountByEmail) {
+      const existingAccountByWebID = await this.accountShape
+        .select((account) => [account.accountOf])
+        .where((account) =>
+          account.accountOf.equals({
+            id: expectedWebID,
+          })
+        )
+        .one();
+
+      if (!existingAccountByWebID) {
+        return {
+          error:
+            'This email is already registered. Please sign in, reset your password, or contact support.',
+        };
+      }
+    }
+
     // use Auth.login pattern like createAccount for Google and other OAuth providers
     return Auth.login(
       this,
       async () => {
         // before we create a new user and account, check if the user already exists
         // if exists, return the existing account and person so user can be signed in directly
-        let webID: string;
-        try {
-          webID = emailToWebID(email);
-        } catch (error) {
-          console.error(
-            `Invalid email format during OAuth signin: ${email}`,
-            error
-          );
-          return null;
-        }
+        const webID = expectedWebID;
 
         const existingAccount = await this.accountShape
           .select((a) => {
@@ -803,18 +831,7 @@ export default class AuthBackendProvider extends BackendProvider {
       },
       async () => {
         // create new user and account
-        let webID: string;
-        try {
-          webID = emailToWebID(email);
-        } catch (error) {
-          console.error(
-            `Invalid email format during OAuth account creation: ${email}`,
-            error
-          );
-          throw new Error(
-            `Could not create ${provider} account: invalid email format`
-          );
-        }
+        const webID = expectedWebID;
 
         // prepare user data based on the provider
         const userData = {
