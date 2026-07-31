@@ -23,7 +23,6 @@ import { RefreshToken } from './shapes/RefreshToken.js';
 import {
   emitAccountWillBeRemovedEvent,
   onAccountWillBeRemoved,
-  offAccountWillBeRemoved,
 } from './utils/events.js';
 import AppleHelper from './helpers/apple.js';
 import GoogleHelper from './helpers/google.js';
@@ -55,26 +54,28 @@ export default class AuthBackendProvider extends BackendProvider {
   public accountShape: typeof UserAccount = UserAccount;
   public userShape: typeof SchemaPerson = SchemaPerson;
   protected zeptoMail: SendMailClient;
-  // Plan-011 — store the listener so dispose() can unsubscribe it.
-  // Anonymous inline callbacks would leak across HMR reloads.
-  private accountRemovedListener?: (account: UserAccountData) => Promise<void>;
+  // Plan-011 — store the unsubscribe function so dispose() can detach the
+  // listener without having to keep the original callback reference around.
+  private unsubscribeAccountRemoval?: () => void;
 
   async setupBeforeControllers() {
     //if defined, take the values from the environment variables to define the shapes for the account and user
     await this.assignEnvPathToField('AUTH_ACCOUNT_TYPE', 'accountShape');
     await this.assignEnvPathToField('AUTH_USER_TYPE', 'userShape');
 
-    this.accountRemovedListener = async (account: UserAccountData) => {
-      const refreshTokens = await RefreshToken.select((rt) => [
-        rt.account,
-      ]).where((rt) => rt.account.equals(account));
-      if (refreshTokens.length > 0) {
-        for (const refreshToken of refreshTokens) {
-          await RefreshToken.delete(refreshToken);
-        }
+    this.unsubscribeAccountRemoval = onAccountWillBeRemoved(
+      async (account: UserAccountData) => {
+        // Delete by relation instead of selecting IDs first. Besides using one
+        // mutation, this also handles legacy rows whose projected ID is missing.
+        // IdentityToken is defined here in Auth, so its cleanup belongs in this
+        // listener rather than in a dependent package's listener (moved from
+        // PeaceGame's listener for correct ownership).
+        await Promise.all([
+          RefreshToken.deleteWhere((rt) => rt.account.equals(account)),
+          IdentityToken.deleteWhere((token) => token.account.equals(account)),
+        ]);
       }
-    };
-    onAccountWillBeRemoved(this.accountRemovedListener);
+    );
 
     // set the user and account shapes for auth
     Auth.userType = this.userShape;
@@ -164,10 +165,8 @@ export default class AuthBackendProvider extends BackendProvider {
     // Plan-011 — remove the middleware we tracked above + unsubscribe
     // the account-removed listener so HMR doesn't leak handlers.
     this.disposeRoutes();
-    if (this.accountRemovedListener) {
-      offAccountWillBeRemoved(this.accountRemovedListener);
-      this.accountRemovedListener = undefined;
-    }
+    this.unsubscribeAccountRemoval?.();
+    this.unsubscribeAccountRemoval = undefined;
   }
 
   async validateRequestToken(request, accessTokenExpired: boolean = false) {
@@ -1021,17 +1020,22 @@ export default class AuthBackendProvider extends BackendProvider {
     const account = auth.userAccount;
     const user = auth.user;
 
-    await emitAccountWillBeRemovedEvent(account);
-
-    // before remove the account and user, we need to remove the other related data authentication
-    const password = await this.getPasswordForUser(user);
-    if (password) {
-      await AuthCredential.delete(password);
+    // Cleanup listeners build relation filters from both nodes, so validate
+    // them before emitting the event rather than only before final deletion.
+    if (!account?.id || !user?.id) {
+      throw new Error('Cannot remove account: account or user ID is missing.');
     }
 
+    await emitAccountWillBeRemovedEvent(account);
+
+    // Remove every credential for the user without relying on a projected ID.
+    await AuthCredential.deleteWhere((credential) =>
+      credential.credentialOf.equals(user)
+    );
+
     //remove account and user
-    await this.accountShape.delete(account);
-    await this.userShape.delete(user);
+    await this.accountShape.delete({ id: account.id });
+    await this.userShape.delete({ id: user.id });
 
     console.log('Account has been deleted', account.id);
     this.signout();
