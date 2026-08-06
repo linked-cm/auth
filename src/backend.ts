@@ -284,18 +284,22 @@ export default class AuthBackendProvider extends BackendProvider {
         };
       }
 
-      existingCredential = await AuthCredential.select((ac) => {
+      const accountCredentials = await AuthCredential.select((ac) => {
         return [
           ac.passwordHash,
           ac.credentialOf.select((p) => {
             return [p.givenName, p.familyName, p.telephone];
           }),
         ];
-      })
-        .where((ac) => {
-          return ac.credentialOf.equals(account.accountOf);
-        })
-        .one();
+      }).where((ac) => {
+        return ac.credentialOf.equals({ id: account.accountOf.id });
+      });
+
+      // OAuth and legacy flows can leave more than one credential row on a
+      // person. Select the row that actually contains a password hash.
+      existingCredential = accountCredentials.find((credential) =>
+        Boolean(credential.passwordHash)
+      );
 
       if (!existingCredential) {
         return {
@@ -441,18 +445,20 @@ export default class AuthBackendProvider extends BackendProvider {
    * @returns The password (AuthCredential)
    */
   async getPasswordForUser(user: QResult<Person>) {
-    const credential = await AuthCredential.select((cred) => {
+    const credentials = await AuthCredential.select((cred) => {
       return [
         cred.passwordHash,
         cred.credentialOf.select((p) => {
           return [p.givenName, p.familyName, p.telephone];
         }),
       ];
-    })
-      .where((cred) => {
-        return cred.credentialOf.equals({ id: user.id });
-      })
-      .one();
+    }).where((cred) => {
+      return cred.credentialOf.equals({ id: user.id });
+    });
+
+    const credential = credentials.find((candidate) =>
+      Boolean(candidate.passwordHash)
+    );
 
     if (!credential) {
       console.warn(`Could not find any password for account ${user.id}`);

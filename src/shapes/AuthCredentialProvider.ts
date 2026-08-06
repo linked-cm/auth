@@ -21,7 +21,7 @@ export class AuthCredentialProvider extends ShapeProvider {
   }
   async hasAuthCredential(person: QResult<Person>) {
     const credential = await AuthCredential.select()
-      .where((p) => p.credentialOf.equals(person))
+      .where((p) => p.credentialOf.equals({ id: person.id }))
       .one();
 
     return credential && true;
@@ -45,13 +45,11 @@ export class AuthCredentialProvider extends ShapeProvider {
    * This intentionally ignores credential rows created for OAuth-only users.
    */
   async hasPassword(person: QResult<Person>) {
-    const credential = await AuthCredential.select((cred) => {
+    const credentials = await AuthCredential.select((cred) => {
       return [cred.passwordHash];
-    })
-      .where((cred) => cred.credentialOf.equals(person))
-      .one();
+    }).where((cred) => cred.credentialOf.equals({ id: person.id }));
 
-    return Boolean(credential?.passwordHash);
+    return credentials.some((credential) => Boolean(credential.passwordHash));
   }
 
   /**
