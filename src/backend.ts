@@ -874,7 +874,7 @@ export default class AuthBackendProvider extends BackendProvider {
           await IdentityToken.create({
             token: identityToken,
             email: email,
-            subject: oauthUserData._appleSub as string,
+            sub: oauthUserData._appleSub as string,
             account: account,
           }).catch((err) => {
             console.error(
