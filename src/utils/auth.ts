@@ -1,6 +1,6 @@
 import { UserAccount } from '@_linked/sioc/shapes/UserAccount';
 import { Person, Person as SchemaPerson } from '@_linked/schema/shapes/Person';
-import { Person as FoafPerson } from 'foaf/shapes/Person';
+import type { Shape } from '@_linked/core/shapes/Shape';
 import { Server } from '@_linked/server-utils/utils/Server';
 import { ENFORCE_SIGNED_IN } from '../hooks/useAuth.js';
 import type {
@@ -18,7 +18,10 @@ import { setQueryContext } from '@_linked/core/queries/QueryContext';
 
 export class Auth {
   // define the default user and account types
-  static userType: typeof SchemaPerson | typeof FoafPerson = SchemaPerson;
+  // Widened from `typeof SchemaPerson | typeof FoafPerson`: `foaf` was the last
+  // legacy `lincd` package in this dependency tree and the union was type-only.
+  // `AuthProviderProps.userType` already used `typeof Shape`.
+  static userType: typeof Shape = SchemaPerson;
   static accountType: typeof UserAccount = UserAccount;
 
   /**
@@ -34,11 +37,11 @@ export class Auth {
     provider,
     findAccount: () => Promise<{
       account: QResult<UserAccount>;
-      person: QResult<SchemaPerson | FoafPerson>;
+      person: QResult<Shape>;
     }>,
     createAccount: () => Promise<{
       account: QResult<UserAccount>;
-      person: QResult<SchemaPerson | FoafPerson>;
+      person: QResult<Shape>;
     }>,
     logMethodName: string
   ): Promise<AuthenticationResult> {
