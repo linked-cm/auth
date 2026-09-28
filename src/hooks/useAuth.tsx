@@ -2,7 +2,6 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Server } from '@_linked/server-utils/utils/Server';
 import { packageName } from '../package.js';
 import { Authentication } from '../shapes/Authentication.js';
-import { Person as FoafPerson } from 'foaf/shapes/Person';
 import { Person as SchemaPerson } from '@_linked/schema/shapes/Person';
 import { UserAccount } from '@_linked/sioc/shapes/UserAccount';
 import { Shape } from '@_linked/core/shapes/Shape';
@@ -26,7 +25,6 @@ import { QResult } from '@_linked/core/queries/SelectQuery';
 import type { UserData, UserAccountData } from '../types/auth.js';
 import { useNavigate } from 'react-router-dom';
 
-type Person = FoafPerson | SchemaPerson;
 export const ENFORCE_SIGNED_IN = 'ENFORCE_SIGNIN';
 
 const AuthContext = createContext(null);
@@ -42,7 +40,6 @@ interface AuthProviderProps {
 // ... available to any child component that calls useAuth().
 export function ProvideAuth({
   children,
-  // userType = FoafPerson,
   // accountType = UserAccount,
   signinRoute = '',
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -102,7 +99,6 @@ export const useAuth = <
 
 // Provider hook that creates auth object and handles state
 function useProvideAuth(signinRoute: string = '') {
-  // userType: QResult = QResult<FoafPerson>,
   // accountType: QResult = QResult<UserAccount>,
   // For the backend: get the express request from the app context
   // and set the default auth to the linked auth or the first local auth
