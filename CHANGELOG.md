@@ -1,5 +1,70 @@
 # @\_linked/auth
 
+## 1.5.0
+
+### Minor Changes
+
+- [#38](https://github.com/linked-fw/auth/pull/38) [`65e425c`](https://github.com/linked-fw/auth/commit/65e425cae6c6ad96056ea12842444c73d33c8c23) Thanks [@flyon](https://github.com/flyon)! - Require `@_linked/core@^2.22.8` (was `^2.0.1`), and pin it in the lockfile.
+
+  The declared range was wide enough that the resolved core depended on whatever the
+  consumer — or this repo's own CI, via `package-lock.json` — happened to install. Core
+  decides how a shape's IRI is minted, so a stale core made this package emit legacy
+  `data.lincd.org` IRIs instead of the arch-02 `linked.cm` scheme. Which IRIs a published
+  package produces should not be a function of the installer's dependency tree.
+
+  Minor rather than patch: this raises the minimum core a consumer must resolve, so it
+  changes what gets installed rather than only what this package does internally.
+
+## 1.4.0
+
+### Minor Changes
+
+- [#36](https://github.com/linked-fw/auth/pull/36) [`8a8442b`](https://github.com/linked-fw/auth/commit/8a8442b282babddcebc21bf6c836f715aa1e8e08) Thanks [@flyon](https://github.com/flyon)! - The six account screens are built on `@_linked/primitives`, and the last `lincd-*`
+  dependencies are gone.
+
+  `Button` and `Modal` came from `lincd-mui-base` and `TextField` from `lincd-input`. Those
+  are now `Button`, `Input`, `Dialog` and `ConfirmDialog` from `@_linked/primitives`, adapted
+  at each call site rather than by widening the shared components: `variant="outlined"` maps
+  to `outline`, `color` carries over unchanged, `startIcon` becomes a child (Button's root is
+  already a flex row with a gap), `fullWidth` becomes one `width: 100%` in each component's
+  own CSS module, `helperText` becomes a sibling paragraph beside the field, and
+  `endAdornment` becomes a positioned control inside a relative wrapper.
+
+  Two changes are behavioural rather than cosmetic, both improvements:
+
+  - **Every modal in this package works again.** `lincd-mui-base`'s `Modal` wraps
+    `@mui/base`'s `FocusTrap`, which throws `rootRef.current.contains is not a function`
+    under React 19 — opening any of them unmounted the whole React tree. The Radix-backed
+    `Dialog` also brings a focus trap, Escape handling, `aria-modal`, focus restoration and a
+    close affordance.
+  - **`RemoveAccountButton` now asks with a `ConfirmDialog` in `tone="danger"`** instead of a
+    hand-built body inside a generic modal. That makes it an `alertdialog`, so a click on the
+    backdrop no longer dismisses a destructive confirmation.
+
+  The screens also pick up `@_linked/css` tokens for the first time. Their colours previously
+  resolved through `--ld-app-color-*` and `--ld-ref-palette-*`, which are defined nowhere, so
+  they rendered essentially unstyled; the local overrides that fought those undefined tokens
+  have been removed rather than given more specificity.
+
+  Also: the full-viewport centring that lived on `CreateNewPasswordForm`'s own root moved to
+  `ForgotPasswordCallback`, the page that wants it. On the root it forced a `100vh` box inside
+  the dialog that `EditPasswordButton` renders the same form into.
+
+## 1.3.4
+
+### Patch Changes
+
+- [#33](https://github.com/linked-fw/auth/pull/33) [`21f9c4e`](https://github.com/linked-fw/auth/commit/21f9c4eecb60bec4d07a462e4fb3362fcc82fed1) Thanks [@flyon](https://github.com/flyon)! - The ontology no longer registers by importing itself.
+
+  It carried `import * as _this from './<prefix>.js'` and passed that namespace to
+  `linkedOntology()`. Under `tsc` the self-reference survives; under a bundler it does
+  not — Rollup treats it as a circular import and elides it, so the binding is
+  `undefined` and a consuming app dies at boot with `_this is not defined`.
+
+  Registration now lives in a `<prefix>.register.ts` sibling, imported from the package
+  entry. Nothing changes for consumers: importing this package still registers the
+  ontology.
+
 ## 1.3.3
 
 ### Patch Changes
