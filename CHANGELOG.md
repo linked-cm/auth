@@ -1,5 +1,17 @@
 # @\_linked/auth
 
+## 1.6.2
+
+### Patch Changes
+
+- [#51](https://github.com/linked-fw/auth/pull/51) [`fc82382`](https://github.com/linked-fw/auth/commit/fc823821e6a8b324ce6f36d8c15862e74d3b4e2c) Thanks [@flyon](https://github.com/flyon)! - Reference UserAccount and Person by class, so loading an auth shape registers them.
+
+  The shapes named them by `[package, name]`, which does not register anything. They
+  were registered only because `emitDecoratorMetadata` happened to keep the getter
+  return-type import alive in the tsc build; a consumer compiling the source with
+  esbuild (a localized checkout under Vite) emits no metadata, loses the import, and
+  queries traversing `account` or `credentialOf` throw `Shape class not found`.
+
 ## 1.6.1
 
 ### Patch Changes
