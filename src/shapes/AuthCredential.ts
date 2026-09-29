@@ -13,7 +13,7 @@ export class AuthCredential extends Shape {
 
   @objectProperty({
     path: auth.credentialOf,
-    shape: ['@_linked/schema', 'Person'],
+    shape: Person,
     maxCount: 1,
   })
   get credentialOf(): Person {
