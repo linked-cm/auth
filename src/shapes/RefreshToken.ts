@@ -19,7 +19,7 @@ export class RefreshToken extends Shape {
 
   @objectProperty({
     path: auth.account,
-    shape: ['@_linked/sioc', 'UserAccount'],
+    shape: UserAccount,
     maxCount: 1,
   })
   get account(): UserAccount {
