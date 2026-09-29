@@ -1,5 +1,11 @@
 # @\_linked/auth
 
+## 1.6.1
+
+### Patch Changes
+
+- [#43](https://github.com/linked-fw/auth/pull/43) [`0d4c713`](https://github.com/linked-fw/auth/commit/0d4c713d2213a69a6a4cb367cce96c8b6035ae7f) Thanks [@flyon](https://github.com/flyon)! - Sourcemaps now embed their TypeScript source, so consumers no longer see 'points to missing source files' warnings.
+
 ## 1.6.0
 
 ### Minor Changes
