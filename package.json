@@ -11,7 +11,7 @@
     "url": "git+https://github.com/linked-fw/auth.git"
   },
   "version": "1.6.3",
-  "packageManager": "npm@11.19.1",
+  "packageManager": "npm@11.20.0",
   "linkedPackage": true,
   "main": "lib/esm/index.js",
   "types": "index.d.ts",
