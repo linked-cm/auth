@@ -2,11 +2,7 @@ import './types.js';
 import './ontologies/auth.register.js';
 
 //SHAPES FIRST
-import './shapes/IdentityToken.js';
-import './shapes/RefreshToken.js';
-import './shapes/AuthCredential.js';
-import './shapes/Authentication.js';
-import './shapes/Password.js';
+import './shapes/index.js';
 
 //THEN COMPONENTS
 import './components/RequireAuth.js';
