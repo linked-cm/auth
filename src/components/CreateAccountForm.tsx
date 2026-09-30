@@ -224,7 +224,6 @@ export function CreateAccountForm({
       </div>
       <Button
         color={submitButtonColor}
-        fullWidth={true}
         className={cl(style.FormButton, submitButtonClassName)}
         disabled={loading}
         onClick={handleSubmit(createAccount)}
