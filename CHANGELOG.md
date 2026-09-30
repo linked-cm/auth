@@ -1,5 +1,11 @@
 # @\_linked/auth
 
+## 1.6.3
+
+### Patch Changes
+
+- [#53](https://github.com/linked-fw/auth/pull/53) [`c752b50`](https://github.com/linked-fw/auth/commit/c752b5062db4eaa721a021a8dcc7fd37ca27c6c8) Thanks [@flyon](https://github.com/flyon)! - Add `shapes/index`, a side-effect-only module that registers every shape this package defines and nothing else (no components, no CSS), so `import '@_linked/auth/shapes/index'` loads the shapes in plain node as well as in a bundle. The package entry now imports it instead of listing shapes one by one.
+
 ## 1.6.2
 
 ### Patch Changes
