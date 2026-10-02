@@ -100,35 +100,34 @@ export class GraphRefreshSessionStore implements RefreshSessionStore {
   }
 
   async create(record: RefreshSessionRecord): Promise<void> {
-    const data: any = {
+    const created = await RefreshToken.create({
       tokenHash: record.tokenHash,
       sessionId: record.sessionId,
       account: { id: record.accountId },
       createdAt: record.createdAt,
       expiresAt: record.expiresAt,
-    };
-    if (record.lastUsedAt) data.lastUsedAt = record.lastUsedAt;
-    const created: any = await RefreshToken.create(data);
+      ...(record.lastUsedAt ? { lastUsedAt: record.lastUsedAt } : {}),
+    });
     record.id = created?.id;
   }
 
   async findByTokenHash(tokenHash: string): Promise<RefreshSessionRecord | null> {
-    const rows: any[] = await (GraphRefreshSessionStore.select() as any).where(
-      (t) => t.tokenHash.equals(tokenHash)
+    const rows = await GraphRefreshSessionStore.select().where((t) =>
+      t.tokenHash.equals(tokenHash)
     );
     return GraphRefreshSessionStore.toRecord(rows?.[0]);
   }
 
   async findBySessionId(sessionId: string): Promise<RefreshSessionRecord[]> {
-    const rows: any[] = await (GraphRefreshSessionStore.select() as any).where(
-      (t) => t.sessionId.equals(sessionId)
+    const rows = await GraphRefreshSessionStore.select().where((t) =>
+      t.sessionId.equals(sessionId)
     );
     return (rows || []).map(GraphRefreshSessionStore.toRecord).filter(Boolean);
   }
 
   async findByAccount(accountId: string): Promise<RefreshSessionRecord[]> {
-    const rows: any[] = await (GraphRefreshSessionStore.select() as any).where(
-      (t) => t.account.equals({ id: accountId })
+    const rows = await GraphRefreshSessionStore.select().where((t) =>
+      t.account.equals({ id: accountId })
     );
     return (rows || []).map(GraphRefreshSessionStore.toRecord).filter(Boolean);
   }
@@ -139,19 +138,19 @@ export class GraphRefreshSessionStore implements RefreshSessionStore {
   ): Promise<void> {
     const id = record.id ?? (await this.findByTokenHash(record.tokenHash))?.id;
     if (!id) return;
-    const data: any = {};
-    for (const [key, value] of Object.entries(patch)) {
-      if (value !== undefined) data[key] = value;
-    }
+    const data: Partial<Pick<RefreshSessionRecord, 'lastUsedAt' | 'revokedAt' | 'replacedBy'>> = {};
+    if (patch.lastUsedAt !== undefined) data.lastUsedAt = patch.lastUsedAt;
+    if (patch.revokedAt !== undefined) data.revokedAt = patch.revokedAt;
+    if (patch.replacedBy !== undefined) data.replacedBy = patch.replacedBy;
     if (Object.keys(data).length === 0) return;
-    await (RefreshToken.update(data) as any).for({ id });
+    await RefreshToken.update(data).for({ id });
     Object.assign(record, patch);
   }
 
   async delete(record: RefreshSessionRecord): Promise<void> {
     const id = record.id ?? (await this.findByTokenHash(record.tokenHash))?.id;
     if (!id) return;
-    await RefreshToken.delete({ id } as any);
+    await RefreshToken.delete({ id });
   }
 }
 

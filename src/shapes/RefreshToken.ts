@@ -13,6 +13,13 @@ import { xsd } from '@_linked/core/ontologies/xsd';
  * one in the same session (`sessionId`), marking the old one revoked with `replacedBy`.
  * Presenting a replaced token again (outside a short grace window) revokes the whole session.
  *
+ * Every property is a decorated getter, so the records are read and written through the query
+ * DSL (`RefreshToken.select(...).where(...)`, `RefreshToken.create({...})`,
+ * `RefreshToken.update({...}).for(id)`); there are no setters, because shapes are never
+ * mutated as live instances. `tokenHash`, `sessionId`, `account`, `createdAt` and `expiresAt`
+ * are required, so a create without them fails validation instead of storing a record that
+ * can never be matched or expired.
+ *
  * This module stays free of server-only imports (it is part of the client bundle); the logic
  * that reads and writes these records lives in `utils/sessions.ts`.
  */
@@ -23,6 +30,7 @@ export class RefreshToken extends Shape {
   /** SHA-256 of the raw refresh token, base64url. */
   @literalProperty({
     path: auth.tokenHash,
+    required: true,
     maxCount: 1,
   })
   get tokenHash(): string {
@@ -32,6 +40,7 @@ export class RefreshToken extends Shape {
   /** The sign-in session (token family) this token belongs to. Shared by every rotation. */
   @literalProperty({
     path: auth.sessionId,
+    required: true,
     maxCount: 1,
   })
   get sessionId(): string {
@@ -40,6 +49,7 @@ export class RefreshToken extends Shape {
 
   @objectProperty({
     path: auth.account,
+    required: true,
     shape: UserAccount,
     maxCount: 1,
   })
@@ -49,6 +59,7 @@ export class RefreshToken extends Shape {
 
   @literalProperty({
     path: auth.createdAt,
+    required: true,
     datatype: xsd.dateTime,
     maxCount: 1,
   })
@@ -67,6 +78,7 @@ export class RefreshToken extends Shape {
 
   @literalProperty({
     path: auth.expiresAt,
+    required: true,
     datatype: xsd.dateTime,
     maxCount: 1,
   })

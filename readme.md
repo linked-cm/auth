@@ -13,6 +13,29 @@ A refresh token is never accepted as an access token. Apps that verify tokens th
 
 Default lifetimes: in development the access token lasts 24 hours and the refresh token 30 days; otherwise 10 days and 60 days. The refresh lifetime is sliding (every refresh starts it again).
 
+## Upgrading from 1.x: migrate stored auth data
+
+2.0 moves auth's ontology from `http://lincd.org/ont/auth/` to `https://linked.cm/ont/auth/`. Every auth class and property changed IRI, so credentials, refresh tokens and the synced shape descriptions written by 1.x are **invisible** to 2.0 until they are rewritten: sign-in answers "No password found for this email". Nothing is lost; the data just has to be migrated once per dataset that auth shapes are stored in (wherever your storage config routes `AuthCredential`, `RefreshToken`, `Password`, `IdentityToken` and `Authentication`).
+
+```ts
+import {
+  migrateAuthNamespace,
+  hasLegacyAuthData,
+} from '@_linked/auth/utils/migrateNamespace';
+
+// `store` is the dataset itself (e.g. the FusekiStore), not a dataset router.
+console.log(await migrateAuthNamespace(store, { dryRun: true })); // { before: N, after: N, ... }
+console.log(await migrateAuthNamespace(store)); // { before: N, after: 0, dryRun: false }
+```
+
+1. Back up the dataset.
+2. Deploy 2.0 and run `migrateAuthNamespace(store)` against each dataset holding auth data, from a one-off script or a deploy step. Users cannot sign in between the deploy and the migration, so run it straight away.
+3. Check that `after` is `0`. Running it again is harmless: it reports `before: 0` and changes nothing.
+
+The migration rewrites every IRI starting with the legacy namespace, in subject, predicate and object position, in the default graph and every named graph, in one SPARQL UPDATE request (one transaction on Fuseki). Literals are left alone.
+
+To catch a dataset that was missed, call `hasLegacyAuthData(store)` at boot and warn (or refuse to start) when it returns `true`. It only looks up typed auth records, so it is cheap. `countLegacyAuthTriples(store)` scans the whole dataset.
+
 ## Installation
 
 To integrate the Auth package, follow these steps:
