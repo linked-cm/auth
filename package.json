@@ -20,7 +20,8 @@
     "start": "npm exec linked dev",
     "build": "rimraf ./lib && npm run build-esm && npm run copy-to-lib",
     "build-esm": "echo \"compiling ESM\" && rimraf ./lib/esm && tsc -p tsconfig-esm.json",
-    "copy-to-lib": "echo 'copying CSS + JSON assets to lib folder' && copyfiles -u 1 'src/**/*.css' 'src/**/*.json' lib/esm"
+    "copy-to-lib": "echo 'copying CSS + JSON assets to lib folder' && copyfiles -u 1 'src/**/*.css' 'src/**/*.json' lib/esm",
+    "test": "node --test test/*.test.mjs"
   },
   "keywords": [
     "lincd",
@@ -40,10 +41,10 @@
     "@_linked/xsd": "^1.0",
     "@capacitor/dialog": "^7.0.2",
     "@tolgee/react": "^5.16.2",
-    "@types/bcrypt": "^5.0.2",
+    "@types/bcrypt": "^6.0.0",
     "@types/js-cookie": "^3.0.6",
     "@types/node": "^24.0.0",
-    "bcrypt": "^5.1.1",
+    "bcrypt": "^6.0.0",
     "chalk": "^4.1.2",
     "connect-sqlite3": "^0.9.15",
     "cookie-parser": "^1.4.6",
