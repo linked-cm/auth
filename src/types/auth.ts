@@ -66,6 +66,11 @@ export type UserAccountData<User extends UserData = UserData> = QResult<
 export type AuthSession<UserAccount = UserAccountData, User = UserData> = {
   userAccount: UserAccount;
   user: User;
+  /**
+   * The session (refresh token family) the current access token belongs to. Set on the server
+   * from the access token's `sid` claim; absent for tokens issued before sessions were stored.
+   */
+  sid?: string;
   updateSessionData?: (
     updatedData: Omit<AuthSession, 'updateSessionData'>
   ) => Promise<{

@@ -38,6 +38,13 @@ export var phoneIdentifier = ns('phoneIdentifier');
 export var forgotPasswordToken = ns('forgotPasswordToken');
 export var telephone = ns('telephone');
 export var hash = ns('hash');
+export var tokenHash = ns('tokenHash');
+export var sessionId = ns('sessionId');
+export var createdAt = ns('createdAt');
+export var lastUsedAt = ns('lastUsedAt');
+export var expiresAt = ns('expiresAt');
+export var revokedAt = ns('revokedAt');
+export var replacedBy = ns('replacedBy');
 
 //An extra grouping object so all the entities can be accessed from the prefix/name
 export const auth = {
@@ -57,5 +64,12 @@ export const auth = {
   forgotPasswordToken,
   telephone,
   hash,
+  tokenHash,
+  sessionId,
+  createdAt,
+  lastUsedAt,
+  expiresAt,
+  revokedAt,
+  replacedBy,
 };
 

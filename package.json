@@ -21,7 +21,8 @@
     "build": "rimraf ./lib && npm run build-esm && npm run copy-to-lib",
     "build-esm": "echo \"compiling ESM\" && rimraf ./lib/esm && tsc -p tsconfig-esm.json",
     "copy-to-lib": "echo 'copying CSS + JSON assets to lib folder' && copyfiles -u 1 'src/**/*.css' 'src/**/*.json' lib/esm",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "test:integration": "node --test test/integration/*.test.mjs"
   },
   "keywords": [
     "lincd",
@@ -63,9 +64,11 @@
   },
   "devDependencies": {
     "@_linked/cli": "^1.2",
+    "@_linked/fuseki": "^3.2.3",
     "@changesets/changelog-github": "^1.0.0",
     "@changesets/cli": "^3.0.0",
     "copyfiles": "^2.4.1",
+    "express": "^4.22.3",
     "rimraf": "^5.0.7",
     "tsconfig-to-dual-package": "^1.2.0",
     "typescript": "^5.7.3",

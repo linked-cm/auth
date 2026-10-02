@@ -3,17 +3,38 @@ import { linkedShape } from '../package.js';
 import { auth } from '../ontologies/auth.js';
 import { UserAccount } from '@_linked/sioc/shapes/UserAccount';
 import { literalProperty, objectProperty } from '@_linked/core/shapes/SHACL';
-import type { UserAccountData } from '../types/auth.js';
+import { xsd } from '@_linked/core/ontologies/xsd';
 
+/**
+ * One issued refresh token, stored server-side so it can be validated, rotated and revoked.
+ *
+ * Only the SHA-256 hash of the token is stored — the raw token lives on the client alone, so
+ * reading the store does not yield usable tokens. Every refresh replaces the token with a new
+ * one in the same session (`sessionId`), marking the old one revoked with `replacedBy`.
+ * Presenting a replaced token again (outside a short grace window) revokes the whole session.
+ *
+ * This module stays free of server-only imports (it is part of the client bundle); the logic
+ * that reads and writes these records lives in `utils/sessions.ts`.
+ */
 @linkedShape
 export class RefreshToken extends Shape {
   static targetClass = auth.RefreshToken;
 
+  /** SHA-256 of the raw refresh token, base64url. */
   @literalProperty({
-    path: auth.token,
+    path: auth.tokenHash,
     maxCount: 1,
   })
-  get token(): string {
+  get tokenHash(): string {
+    return '';
+  }
+
+  /** The sign-in session (token family) this token belongs to. Shared by every rotation. */
+  @literalProperty({
+    path: auth.sessionId,
+    maxCount: 1,
+  })
+  get sessionId(): string {
     return '';
   }
 
@@ -26,40 +47,49 @@ export class RefreshToken extends Shape {
     return undefined as any;
   }
 
-  /**
-   * Remove the token from the database
-   *
-   * @param token The token to remove
-   * @returns True if the token was removed, false if it was not found
-   */
-  static async removeRefreshToken(token: string) {
-    if (!token) {
-      return false;
-    }
-
-    const existingToken = await RefreshToken.select((t) => [t.token, t.account])
-      .where((t) => t.token.equals(token))
-      .one();
-
-    if (existingToken) {
-      await RefreshToken.delete(existingToken);
-      return true;
-    }
-
-    return false;
+  @literalProperty({
+    path: auth.createdAt,
+    datatype: xsd.dateTime,
+    maxCount: 1,
+  })
+  get createdAt(): Date {
+    return undefined as any;
   }
 
-  /**
-   * Get the refresh token for an account
-   *
-   * @param account
-   * @returns
-   */
-  static async getRefreshTokenForAccount(account: UserAccountData) {
-    const existingToken = await RefreshToken.select((t) => [t.token, t.account])
-      .where((t) => t.account.equals(account))
-      .one();
+  @literalProperty({
+    path: auth.lastUsedAt,
+    datatype: xsd.dateTime,
+    maxCount: 1,
+  })
+  get lastUsedAt(): Date {
+    return undefined as any;
+  }
 
-    return existingToken;
+  @literalProperty({
+    path: auth.expiresAt,
+    datatype: xsd.dateTime,
+    maxCount: 1,
+  })
+  get expiresAt(): Date {
+    return undefined as any;
+  }
+
+  /** Set when the token was rotated, signed out or otherwise revoked. */
+  @literalProperty({
+    path: auth.revokedAt,
+    datatype: xsd.dateTime,
+    maxCount: 1,
+  })
+  get revokedAt(): Date {
+    return undefined as any;
+  }
+
+  /** The `tokenHash` of the token that replaced this one when it was rotated. */
+  @literalProperty({
+    path: auth.replacedBy,
+    maxCount: 1,
+  })
+  get replacedBy(): string {
+    return '';
   }
 }

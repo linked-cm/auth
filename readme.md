@@ -4,7 +4,14 @@
 
 The Auth package facilitates authentication in your application using JSON Web Tokens (JWT). It employs `express-jwt` for stateless authentication, handling `accessToken` and `refreshToken` for web applications via Cookies and mobile applications using `@capacitor/preferences.`
 
-Since the `accessToken` and `refreshToken` generated, default `accessToken` will be valid 60 minutes and `refreshToken` 7 days and your refreshToken will be saved into the database.
+Signing in returns two tokens:
+
+- an **access token** — a JWT (`typ: 'access'`, `aud` = `SITE_ROOT`, `sid` = the session) that authenticates requests as a Bearer header or `accessToken` cookie;
+- a **refresh token** — an opaque random value. Only its SHA-256 hash is stored (as a `RefreshToken` shape, through your app's storage — route it like `AuthCredential`). `validateToken` exchanges it for new tokens and **rotates** it: the old one stops working, and presenting it again revokes the session. Signing out revokes the session; a password reset revokes all of the account's sessions.
+
+A refresh token is never accepted as an access token. Apps that verify tokens themselves should use `verifyAccessToken` from `@_linked/auth/utils/jwt` instead of `jwt.verify`.
+
+Default lifetimes: in development the access token lasts 24 hours and the refresh token 30 days; otherwise 10 days and 60 days. The refresh lifetime is sliding (every refresh starts it again).
 
 ## Installation
 
@@ -33,6 +40,16 @@ import { PaidAccountTier1 } from 'lincd-dating/lib/shapes/PaidAccountTier1';
 "AUTH_USER_TYPE": "lincd-dating/lib/shapes/Person",
 ```
 
+3. Set the secrets. **Outside `NODE_ENV=development` or `test` the server refuses to start without them** (development falls back to insecure defaults and warns).
+
+| Variable | Required | Meaning |
+|---|---|---|
+| `JWT_SECRET` | yes (outside development/test) | signs access tokens — `openssl rand -base64 48` |
+| `SESSION_SECRET` | yes (outside development/test) | signs the session cookie — `openssl rand -base64 48` |
+| `SITE_ROOT` | yes | the access token audience |
+| `AUTH_ACCESS_TOKEN_TTL` | no | access token lifetime in seconds |
+| `AUTH_REFRESH_TOKEN_TTL` | no | refresh token lifetime in seconds |
+
 ## How to use on Frontend
 
 Import the useAuth hook in your page to access functions like `signin`, `validateToken`, and `signout`.
@@ -59,7 +76,7 @@ const userAccount = auth.userAccount;
 
 ### Sign out
 
-Since user signout, the process is all the tokens will be remove from cookies, storages and databases.
+Signing out removes the tokens from cookies/storage and revokes the session on the server, so its refresh token can no longer be used. (The access token itself stays valid until it expires.)
 
 ```tsx
 import {useAuth} from 'lincd-auth/lib/hooks/useAuth';
