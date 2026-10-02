@@ -1,5 +1,11 @@
 # @\_linked/auth
 
+## 1.6.4
+
+### Patch Changes
+
+- [#57](https://github.com/linked-fw/auth/pull/57) [`c4f4a7e`](https://github.com/linked-fw/auth/commit/c4f4a7e5d5c38c8ada78de013cfade47d65fa31c) Thanks [@renovate](https://github.com/apps/renovate)! - Upgrade bcrypt to 6. It ships prebuilt N-API binaries for linux (glibc and musl, x64/arm64/arm), macOS and Windows inside the package, so installing no longer downloads a binary from GitHub or falls back to a node-gyp compile. Requires Node 18 or newer. Existing password hashes keep verifying — a test pins hashes produced by bcrypt 5 against the built helper.
+
 ## 1.6.3
 
 ### Patch Changes
