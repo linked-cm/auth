@@ -81,15 +81,20 @@ async function createAccessToken(
  *
  * @param payload - The authentication session payload containing user and account data
  * @param audience - Defaults to SITE_ROOT
- * @returns An object containing the generated access and refresh tokens, and the session id.
+ * @returns The access and refresh tokens, the session id, and when the refresh token expires.
  */
 async function createToken(
   payload: AuthSession,
   audience: string = defaultAudience()
-): Promise<{ accessToken: string; refreshToken: string; sessionId: string }> {
+): Promise<{
+  accessToken: string;
+  refreshToken: string;
+  sessionId: string;
+  refreshTokenExpiresAt: Date;
+}> {
   //TODO: add scope/roles to access token to define what sort of actions this token grants access to
   // this likely goes hand in hand with a UX where the user grants access
-  const { refreshToken, sessionId } = await issueRefreshToken(
+  const { refreshToken, sessionId, expiresAt } = await issueRefreshToken(
     payload?.userAccount?.id
   );
   const accessToken = await createAccessToken(payload, audience, sessionId);
@@ -97,6 +102,7 @@ async function createToken(
     accessToken,
     refreshToken,
     sessionId,
+    refreshTokenExpiresAt: expiresAt,
   };
 }
 
@@ -155,6 +161,31 @@ function writeCache(key: string, payload: AuthSessionPayload) {
 /** Forget every cached verification (tests, secret rotation). */
 function clearAccessTokenCache() {
   verifiedAccessTokens.clear();
+  warnedTokens.clear();
+}
+
+/** Three non-empty base64url segments: the shape of a signed JWT. */
+function looksLikeJwt(token: string): boolean {
+  return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token);
+}
+
+/**
+ * A rejected JWT (bad signature, wrong audience or kind) is worth one line in the log, but a
+ * client keeps presenting the same token on every request, so each token is reported once.
+ * Bounded; tokens are remembered by hash.
+ */
+const WARNED_TOKENS_MAX = 1000;
+const warnedTokens = new Set<string>();
+
+function warnOncePerToken(token: string, message: string) {
+  const key = crypto.createHash('sha256').update(token).digest('base64url');
+  if (warnedTokens.has(key)) return;
+  if (warnedTokens.size >= WARNED_TOKENS_MAX) {
+    const oldest = warnedTokens.values().next().value;
+    if (oldest !== undefined) warnedTokens.delete(oldest);
+  }
+  warnedTokens.add(key);
+  console.warn(message);
 }
 
 /**
@@ -174,6 +205,11 @@ function verifyAccessToken(
 ): AuthSessionPayload | false {
   if (!token || typeof token !== 'string') return false;
   const audience = options.audience ?? defaultAudience();
+  if (!looksLikeJwt(token)) {
+    // Not a JWT at all — typically the opaque refresh token sent where an access token is
+    // expected. Routine (and anonymous), so it is not logged.
+    return false;
+  }
   const cacheKey = `${audience ?? ''}\n${token}`;
   const cached = readCache(cacheKey);
   if (cached) return cached;
@@ -187,12 +223,12 @@ function verifyAccessToken(
   } catch (err) {
     if (err?.name !== 'TokenExpiredError') {
       // expired tokens are routine; anything else is worth a line in the log
-      console.warn(`@_linked/auth: rejected access token: ${err?.message ?? err}`);
+      warnOncePerToken(token, `@_linked/auth: rejected access token: ${err?.message ?? err}`);
     }
     return false;
   }
   if (!isAccessTokenClaims(decoded, audience)) {
-    console.warn('@_linked/auth: rejected a token that is not an access token');
+    warnOncePerToken(token, '@_linked/auth: rejected a token that is not an access token');
     return false;
   }
   writeCache(cacheKey, decoded as AuthSessionPayload);

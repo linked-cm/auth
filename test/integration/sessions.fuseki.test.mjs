@@ -170,6 +170,35 @@ test('the store holds a hash with dated metadata, never the raw token', async ()
   assert.equal(raw.length, 0, 'the raw refresh token is not stored');
 });
 
+test('sign-in and validateToken report the stored refresh token expiry', async () => {
+  const signin = await provider().signinWithPassword(email, PASSWORD_1);
+  assert.equal(signin.error, undefined, signin.error);
+  const hash = crypto.createHash('sha256').update(signin.refreshToken).digest('base64url');
+  const rows = await sparql(`
+    PREFIX auth: <https://linked.cm/ont/auth/>
+    SELECT ?o WHERE {
+      { GRAPH ?g { ?s auth:tokenHash "${hash}" ; auth:expiresAt ?o } }
+      UNION { ?s auth:tokenHash "${hash}" ; auth:expiresAt ?o }
+    }`);
+  assert.equal(rows.length, 1, 'one stored expiry');
+  const storedMs = Date.parse(rows[0].o.value);
+  assert.ok(Math.abs(Date.parse(signin.refreshTokenExpiresAt) - storedMs) < 1000, 'sign-in');
+  assert.ok(signin.refreshTokenExpiresIn > 0);
+
+  // the client echoes its refresh token while the access token is still valid
+  const request = {
+    headers: { authorization: `Bearer ${signin.accessToken}` },
+    cookies: {},
+  };
+  const validated = await provider(request).validateToken(signin.refreshToken);
+  assert.equal(validated.error, undefined, validated.error);
+  assert.equal(validated.refreshToken, signin.refreshToken);
+  assert.ok(
+    Math.abs(Date.parse(validated.refreshTokenExpiresAt) - storedMs) < 1000,
+    'looked up from the store'
+  );
+});
+
 test('signout revokes that session only', async () => {
   const deviceA = await provider().signinWithPassword(email, PASSWORD_1);
   const deviceB = await provider().signinWithPassword(email, PASSWORD_1);

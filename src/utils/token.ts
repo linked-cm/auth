@@ -119,6 +119,116 @@ async function setAuthToken({
 }
 
 /**
+ * Seconds until a JWT's `exp`, read without verifying it (the server verifies; this only sizes
+ * the cookie). Undefined when the token cannot be read or has already expired.
+ */
+function secondsUntilJwtExpiry(token: string, nowMs: number = Date.now()): number | undefined {
+  try {
+    const part = token.split('.')[1];
+    if (!part) return undefined;
+    const base64 = part.replace(/-/g, '+').replace(/_/g, '/');
+    const json =
+      typeof atob === 'function'
+        ? atob(base64)
+        : Buffer.from(base64, 'base64').toString('utf8');
+    const exp = JSON.parse(json)?.exp;
+    if (typeof exp !== 'number') return undefined;
+    const seconds = Math.floor(exp - nowMs / 1000);
+    return seconds > 0 ? seconds : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * When the refresh token the server just issued (or confirmed) stops being valid.
+ *
+ * The server's lifetime (`AUTH_REFRESH_TOKEN_TTL`) is not visible in the browser, so it returns
+ * the record's expiry with every token response. `refreshTokenExpiresIn` (seconds from the
+ * response) is used first because it does not depend on the client's clock.
+ */
+export interface RefreshTokenExpiry {
+  /** Seconds from the response until the refresh token expires. */
+  refreshTokenExpiresIn?: number;
+  /** The refresh token's expiry as an ISO date-time. */
+  refreshTokenExpiresAt?: string;
+}
+
+/** The expiry fields a server sends for a refresh token expiring at `expiresAt`. */
+function refreshTokenExpiryFields(
+  expiresAt: Date | undefined,
+  now: Date = new Date()
+): RefreshTokenExpiry {
+  if (!expiresAt || isNaN(expiresAt.getTime())) return {};
+  return {
+    refreshTokenExpiresAt: expiresAt.toISOString(),
+    refreshTokenExpiresIn: Math.max(
+      0,
+      Math.floor((expiresAt.getTime() - now.getTime()) / 1000)
+    ),
+  };
+}
+
+/** Seconds the refresh token cookie should live, from the server's expiry fields if present. */
+function secondsUntilRefreshExpiry(
+  expiry: RefreshTokenExpiry | undefined,
+  nowMs: number = Date.now()
+): number | undefined {
+  const inSeconds = expiry?.refreshTokenExpiresIn;
+  if (typeof inSeconds === 'number' && Number.isFinite(inSeconds) && inSeconds > 0) {
+    return Math.floor(inSeconds);
+  }
+  if (expiry?.refreshTokenExpiresAt) {
+    const atMs = Date.parse(expiry.refreshTokenExpiresAt);
+    if (!isNaN(atMs) && atMs > nowMs) {
+      return Math.floor((atMs - nowMs) / 1000);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Store the tokens of an authentication response.
+ *
+ * - The access token cookie lives exactly as long as the token (its JWT `exp`).
+ * - The refresh token cookie lives as long as the server's record (`refreshTokenExpiresIn` /
+ *   `refreshTokenExpiresAt` in the response). A server that does not send them (releases before
+ *   they existed) gets the client defaults — except when the refresh token is the one already
+ *   stored, which is then left alone rather than extended past what the server knows about.
+ */
+async function storeAuthTokens({
+  accessToken,
+  refreshToken,
+  refreshTokenExpiresIn,
+  refreshTokenExpiresAt,
+}: {
+  accessToken?: string;
+  refreshToken?: string;
+} & RefreshTokenExpiry): Promise<void> {
+  if (accessToken) {
+    await setAuthToken({
+      key: ACCESS_TOKEN,
+      value: accessToken,
+      expires: secondsUntilJwtExpiry(accessToken) ?? ACCESS_TOKEN_EXPIRES,
+    });
+  }
+  if (refreshToken) {
+    const expires = secondsUntilRefreshExpiry({
+      refreshTokenExpiresIn,
+      refreshTokenExpiresAt,
+    });
+    if (expires === undefined && (await getAuthToken(REFRESH_TOKEN)) === refreshToken) {
+      return;
+    }
+    await setAuthToken({
+      key: REFRESH_TOKEN,
+      value: refreshToken,
+      expires: expires ?? REFRESH_TOKEN_EXPIRES,
+    });
+  }
+}
+
+/**
  * Remove a token from storage based on the platform (native or web).
  *
  * @param key - The key under which the token is stored
@@ -133,6 +243,10 @@ async function removeAuthToken(key: string) {
 
 export {
   getAuthToken,
+  storeAuthTokens,
+  secondsUntilJwtExpiry,
+  secondsUntilRefreshExpiry,
+  refreshTokenExpiryFields,
   setAuthToken,
   removeAuthToken,
   setAuthTokenStorageMethods,

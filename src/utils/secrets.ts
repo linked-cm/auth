@@ -11,6 +11,19 @@ import crypto from 'node:crypto';
 /** The fallback JWT secret used in development and test only. */
 export const DEV_JWT_SECRET = 'jwt-secret';
 
+/**
+ * A configuration error the server must not run with. `fatal: true` tells @_linked/server (from
+ * the release that honours it) to abort startup instead of logging the failed provider hook and
+ * serving anyway — which would leave a production deployment running with broken auth.
+ */
+export class FatalConfigError extends Error {
+  readonly fatal = true;
+  constructor(message: string) {
+    super(message);
+    this.name = 'FatalConfigError';
+  }
+}
+
 const GENERATE_HINT = 'Generate one with: openssl rand -base64 48';
 
 /** True when NODE_ENV is `development` or `test` — the only modes that allow fallbacks. */
@@ -28,7 +41,7 @@ function warnOnce(key: string, message: string) {
 
 /**
  * The secret access tokens are signed and verified with.
- * Throws outside development/test when JWT_SECRET is not set.
+ * Throws a FatalConfigError outside development/test when JWT_SECRET is not set.
  */
 export function getJwtSecret(): string {
   const secret = process.env.JWT_SECRET;
@@ -36,7 +49,7 @@ export function getJwtSecret(): string {
     return secret;
   }
   if (!isDevelopmentLikeEnv()) {
-    throw new Error(
+    throw new FatalConfigError(
       `@_linked/auth: JWT_SECRET is not set (NODE_ENV=${process.env.NODE_ENV ?? 'unset'}). ` +
         'Access tokens cannot be signed or verified without it. ' +
         GENERATE_HINT
@@ -53,7 +66,7 @@ export function getJwtSecret(): string {
 
 /**
  * The express-session secret.
- * Throws outside development/test when SESSION_SECRET is not set.
+ * Throws a FatalConfigError outside development/test when SESSION_SECRET is not set.
  *
  * @param devFallbackSeed - what the development fallback is derived from
  */
@@ -63,7 +76,7 @@ export function getSessionSecret(devFallbackSeed: string): string {
     return secret;
   }
   if (!isDevelopmentLikeEnv()) {
-    throw new Error(
+    throw new FatalConfigError(
       `@_linked/auth: SESSION_SECRET is not set (NODE_ENV=${process.env.NODE_ENV ?? 'unset'}). ` +
         'Session cookies cannot be signed securely without it. ' +
         GENERATE_HINT
