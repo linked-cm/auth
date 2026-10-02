@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import jwksClient from 'jwks-rsa';
 import jwt, { type JwtPayload } from 'jsonwebtoken';
 
@@ -42,6 +43,41 @@ function requirePayload(value: string | JwtPayload): JwtPayload {
   return value;
 }
 
+function timingSafeEqualString(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+/**
+ * The nonce claim in an Apple identity token is whatever the client handed to
+ * Apple. Native Sign in with Apple (and the Firebase convention most clients
+ * follow) hands Apple SHA-256(rawNonce) as hex and keeps the raw nonce, which
+ * is what reaches us; Apple JS on the web hands the nonce over unchanged.
+ * Accept both, compared in constant time.
+ *
+ * Only the hashed form protects against replay: the raw nonce never appears in
+ * the token, so someone holding a leaked token cannot produce it. With the
+ * unhashed form the nonce can be read off the token itself, so it binds
+ * nothing and only the token's expiry limits a replay.
+ */
+export function appleNonceMatches(
+  tokenNonce: unknown,
+  suppliedNonce: string
+): boolean {
+  if (typeof tokenNonce !== 'string' || !tokenNonce || !suppliedNonce) {
+    return false;
+  }
+  const hashed = crypto
+    .createHash('sha256')
+    .update(suppliedNonce)
+    .digest('hex');
+  return (
+    timingSafeEqualString(tokenNonce, hashed) ||
+    timingSafeEqualString(tokenNonce, suppliedNonce)
+  );
+}
+
 const AppleHelper = {
   async validateIdentityToken(
     identityToken: string,
@@ -74,7 +110,7 @@ const AppleHelper = {
       })
     );
 
-    if (payload.nonce !== options.nonce) {
+    if (!appleNonceMatches(payload.nonce, options.nonce)) {
       throw new Error('Apple identity token nonce is invalid');
     }
 
@@ -88,6 +124,9 @@ const AppleHelper = {
       throw new Error('Apple identity token email is not verified');
     }
 
+    // Private relay addresses (is_private_email) are verified by Apple like
+    // any other address and are unique to this app, so they need no special
+    // case: they can only ever match an account Apple sign-in created.
     return {
       sub: payload.sub,
       email: typeof payload.email === 'string' ? payload.email : undefined,

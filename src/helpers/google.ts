@@ -79,7 +79,10 @@ const GoogleHelper = {
 
       return payload;
     } catch (error) {
-      console.error('Error validating Google ID token:', error);
+      // Never log the error itself: google-auth-library puts the raw ID token
+      // ("Invalid token signature: <jwt>") or its decoded payload into the
+      // message, so logging it would write credentials and PII to the log.
+      console.error('Google ID token rejected');
       return null;
     }
   },

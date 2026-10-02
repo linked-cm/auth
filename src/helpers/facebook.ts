@@ -47,10 +47,16 @@ const FacebookHelper = {
       }).toString();
     const debugResponse = await fetcher(debugUrl);
     const debugResult = await debugResponse.json();
+    // debug_token is called with OUR app token, so Facebook itself states
+    // whether the user token is valid and which app it was issued to. A token
+    // issued to another app (or a forged one) fails here, before /me is ever
+    // asked about it.
+    const tokenData = debugResult?.data;
     if (
       !debugResponse.ok ||
-      !debugResult?.data?.is_valid ||
-      debugResult.data.app_id !== appId
+      tokenData?.is_valid !== true ||
+      String(tokenData.app_id) !== String(appId) ||
+      !tokenData.user_id
     ) {
       throw new Error('Facebook access token is invalid');
     }
@@ -65,6 +71,10 @@ const FacebookHelper = {
     const profile = await profileResponse.json();
     if (!profileResponse.ok || !profile?.id || !profile?.email) {
       throw new Error('Facebook profile is invalid');
+    }
+    // The profile must belong to the user the token was issued for.
+    if (String(profile.id) !== String(tokenData.user_id)) {
+      throw new Error('Facebook profile does not match the access token');
     }
 
     return {
