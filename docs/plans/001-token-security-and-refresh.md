@@ -112,7 +112,7 @@ this work.
 
 Status: [x] server-set cookies · [x] client scheduler + single flight + 401 retry · [x] 15 min
 access tokens · [x] idle timeout + absolute lifetime · [x] cleanup job ·
-[ ] `Server.call` auth hook in @_linked/server-utils (follow-up; auth wraps the proxy until then) ·
+[x] `Server.call` auth hook — @_linked/server-utils 1.8 `setAuthHandler` (auth requires ^1.8.0) ·
 [ ] CN: `reconstructLinkedAuthFromToken` → `verifyAccessToken` (still open from step 1).
 
 ### Transport
@@ -144,7 +144,17 @@ access tokens · [x] idle timeout + absolute lifetime · [x] cleanup job ·
   header `x-linked-auth-transport: body`, and only then does the server put the refresh token in the
   body. Native clients keep passing it to `validateToken`/`signout`.
 - **Sign-out / failed refresh**: the server clears all three cookies (and a legacy `refreshToken`
-  on `/`). Sign-in clears a legacy `/` refresh cookie too. js-cookie is gone.
+  on `/`). Sign-in and refresh clear a legacy `/` refresh cookie only when one was actually sent:
+  `req.cookies` keeps one of two same-named cookies, so the raw Cookie header is read — two
+  `refreshToken` values, or one without the `linkedAuthSession` hint (always set together with the
+  scoped cookie), means a legacy cookie is there. js-cookie is gone.
+- **Lost refresh responses** (found in browser validation): a refresh whose response never reaches
+  the browser (a navigation aborts it, or two tabs send the same cookie at once) leaves the browser
+  holding the replaced token. A replaced token presented within the 30 s grace window — while the
+  session is alive — now gets a FRESH refresh token in the same session (and its cookie), instead
+  of an access token only. Before, the browser kept the replaced token, its next refresh came after
+  the grace window and counted as reuse, revoking the whole session. Presenting a replaced token
+  after the grace window is still reuse.
 - Cookies are set through `request.res` / the provider's `response`; a call with no writable
   response (SSR-local `Server.call` after headers were sent, tests) just skips them.
 
@@ -167,10 +177,20 @@ the scheduler cannot loop. `useAuth` registers the refresh (`validateToken` with
 `{forceRefresh: true}`), replaces the polling interval, and on `ENFORCE_SIGNIN` first tries one
 refresh before signing out. A refresh that gets no answer (server error) keeps the session.
 
-`Server.call` has no hook for this, so auth wraps `LincdServerProxy.prototype.fetchWithRetry`
-(present in server-utils 1.4–1.6; every HTTP `Server.call`/`customPost` goes through it). If a
-future server-utils exposes `LincdServerProxy.setAuthHandler`, auth uses that instead.
-**Follow-up for @_linked/server-utils** (separate PR):
+- The lead is 60 s, or half the token's lifetime (`exp - iat`) when that is shorter, at least 1 s —
+  a fixed 60 s lead on a 60 s token refreshed every 5 s.
+- A session that ends while a tab is open clears ALL client state (auth, user, userAccount,
+  validating, in-memory token, `Authorization` default, schedule). Clearing only `userAccount`
+  left `user` set, and an app's sign-in page that redirects when `user` is set bounced against
+  `RequireAuth` in a render loop.
+- `user`/`userAccount` keep their object identity across a refresh when the data is unchanged
+  (same id, same JSON), so effects keyed on `auth.user` do not re-run on every refresh.
+
+@_linked/server-utils 1.8 added `LincdServerProxy.setAuthHandler` (its `AuthHandler` type is
+imported here), and auth registers through it. Only when an app resolves an older server-utils
+does auth fall back to wrapping `LincdServerProxy.prototype.fetchWithRetry`. On the hook path the
+proxy resends with the current default headers, so `setAccessToken(null)` (sign-out, ended
+session) always removes the `Authorization` default. The hook as specified for server-utils:
 
 ```ts
 interface ServerCallAuthHandler {

@@ -1206,7 +1206,6 @@ export default class AuthBackendProvider extends BackendProvider {
       {
         auth: linkedAuth,
         accessToken,
-        // absent on a concurrent-tab refresh: the client keeps the refresh token it has
         refreshToken: rotation.refreshToken,
         ...refreshTokenExpiryFields(rotation.refreshTokenExpiresAt),
       },

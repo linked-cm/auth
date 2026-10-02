@@ -90,6 +90,38 @@ test('scheduler: a new token reschedules; a token with an unchanged exp does not
   assert.equal(refreshes, 1, 'no refresh loop');
 });
 
+/** A token issued at `iatMs` that expires at `expMs`. */
+function tokenWith(iatMs, expMs) {
+  const enc = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  return `${enc({ alg: 'HS256' })}.${enc({ iat: Math.floor(iatMs / 1000), exp: Math.floor(expMs / 1000), jti: Math.random() })}.sig`;
+}
+
+test('scheduler: a 60 s access token refreshes half way, not every few seconds', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_000_000_000_000 });
+  let refreshes = 0;
+  client.setRefreshHandler(async () => {
+    refreshes++;
+    const now = Date.now();
+    client.setAccessToken(tokenWith(now, now + 60_000), now);
+    return true;
+  });
+  const t0 = Date.now();
+  client.setAccessToken(tokenWith(t0, t0 + 60_000), t0);
+  for (let i = 0; i < 120; i++) {
+    mock.timers.tick(1000);
+    await new Promise((r) => setImmediate(r));
+  }
+  assert.equal(refreshes, 4, `one refresh per 30 s over 2 minutes, got ${refreshes}`);
+  client.clearScheduledRefresh();
+});
+
+test('refreshLeadFor: 60 s for normal tokens, half the lifetime for short ones', () => {
+  assert.equal(client.refreshLeadFor(15 * 60_000), 60_000);
+  assert.equal(client.refreshLeadFor(60_000), 30_000);
+  assert.equal(client.refreshLeadFor(1000), 1000, 'never below the minimum');
+  assert.equal(client.refreshLeadFor(undefined), 60_000);
+});
+
 test('scheduler: a server-rendered page schedules from exp alone', async () => {
   mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_000_000_000_000 });
   let refreshes = 0;
@@ -253,6 +285,29 @@ test('a call about to go out with an expired token refreshes first', async () =>
   });
   assert.deepEqual(await Server.call('some-package', 'getThings'), { ok: true });
   assert.deepEqual(seen.map((s) => s.auth), ['Bearer token-fresh'], 'no failed request first');
+});
+
+test('server-utils 1.8: the retry is registered through setAuthHandler, not by patching', () => {
+  client.installServerCallRetry();
+  const handler = LincdServerProxy.getAuthHandler();
+  assert.ok(handler?.beforeRequest && handler?.onUnauthorized, 'auth handler registered');
+});
+
+test('fallback for older server-utils: the fetch wrapper refreshes and retries once', async () => {
+  client.setAccessToken('token-1');
+  client.setRefreshHandler(async () => {
+    client.setAccessToken('token-2');
+    return true;
+  });
+  const sent = [];
+  const fakeFetch = async (url, init) => {
+    sent.push(init.headers.Authorization);
+    return { status: init.headers.Authorization === 'Bearer token-2' ? 200 : 401 };
+  };
+  const wrapped = client.withAuthRetry(fakeFetch);
+  const res = await wrapped('http://x/call/pkg/m', { headers: { Authorization: 'Bearer token-1' } });
+  assert.equal(res.status, 200);
+  assert.deepEqual(sent, ['Bearer token-1', 'Bearer token-2']);
 });
 
 test('installing twice wraps once', () => {

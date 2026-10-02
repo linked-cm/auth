@@ -38,6 +38,21 @@ import { useNavigate } from 'react-router-dom';
 
 export const ENFORCE_SIGNED_IN = 'ENFORCE_SIGNIN';
 
+/**
+ * Keep the previous object when the new one holds the same data. Every refresh delivers a new
+ * `user`/`userAccount` object; replacing an unchanged one would re-run every effect that depends
+ * on it (apps key data loading on `auth.user`).
+ */
+export function keepIfUnchanged<T>(previous: T, next: T): T {
+  if (previous === next || !previous || !next) return next;
+  if ((previous as any).id !== (next as any).id) return next;
+  try {
+    return JSON.stringify(previous) === JSON.stringify(next) ? previous : next;
+  } catch {
+    return next;
+  }
+}
+
 const AuthContext = createContext(null);
 
 interface AuthProviderProps {
@@ -175,8 +190,9 @@ function useProvideAuth(signinRoute: string = '') {
     // A server-rendered page knows the access token's expiry (the token itself is an httpOnly
     // cookie): schedule the refresh from it.
     const exp = (defaultAuth as any)?.exp;
+    const iat = (defaultAuth as any)?.iat;
     if (typeof exp === 'number' && getAccessTokenExpiresAt() === undefined) {
-      scheduleRefreshAt(exp * 1000);
+      scheduleRefreshAt(exp * 1000, Date.now(), undefined, typeof iat === 'number' ? iat * 1000 : undefined);
     }
 
     const init = async () => {
@@ -225,8 +241,8 @@ function useProvideAuth(signinRoute: string = '') {
     setAuthState(auth);
 
     // update the user and userAccount before render
-    setUser(auth.user);
-    setUserAccount(auth.userAccount);
+    setUser((previous) => keepIfUnchanged(previous, auth.user));
+    setUserAccount((previous) => keepIfUnchanged(previous, auth.userAccount));
 
     // save tokens to storage only if provided: the access cookie lives until the token's exp,
     // the refresh cookie until the expiry the server returned (see storeAuthTokens)
@@ -381,7 +397,6 @@ function useProvideAuth(signinRoute: string = '') {
       ? await getAuthToken(REFRESH_TOKEN)
       : undefined;
 
-    setAccessToken(null);
     resetAuthClient();
     removeAuthToken(ACCESS_TOKEN);
     removeAuthToken(REFRESH_TOKEN);
@@ -397,11 +412,17 @@ function useProvideAuth(signinRoute: string = '') {
     }
   };
 
-  /** Forget the session locally (the server already refused it). */
+  /**
+   * Forget the session locally (the server refused it). EVERYTHING goes: a half-signed-in state
+   * (no userAccount but still a user) makes a sign-in page that checks `user` redirect back into
+   * a RequireAuth page that checks `userAccount` — a render loop.
+   */
   const undoSignin = async () => {
-    // need to remove userAccount for the RequireAuth to redirect to the sign-in page
+    setAuthState(null);
+    setUser(null);
     setUserAccount(null);
-    setAccessToken(null);
+    setValidating(false);
+    resetAuthClient();
     removeAuthToken(ACCESS_TOKEN);
     removeAuthToken(REFRESH_TOKEN);
   };

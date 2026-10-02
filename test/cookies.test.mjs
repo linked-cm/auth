@@ -204,6 +204,30 @@ test('refresh with only the cookie: new cookies, rotated refresh token', async (
   assert.equal(one(refreshed.jar, 'accessToken').value, refreshed.body.accessToken);
 });
 
+test('a lost refresh response: re-presenting the old cookie within the grace window sets a new refresh cookie', async () => {
+  const signin = await rpc(app.url, 'signinFixture');
+  const a = one(signin.jar, 'refreshToken').value;
+  const toB = await rpc(app.url, 'validateToken', [null, { forceRefresh: true }], {
+    headers: { cookie: `refreshToken=${a}` },
+  });
+  const b = one(toB.jar, 'refreshToken').value;
+  // B -> C, response dropped by the browser (navigation)
+  await rpc(app.url, 'validateToken', [null, { forceRefresh: true }], {
+    headers: { cookie: `refreshToken=${b}` },
+  });
+  const again = await rpc(app.url, 'validateToken', [null, { forceRefresh: true }], {
+    headers: { cookie: `refreshToken=${b}` },
+  });
+  assert.equal(again.body.error, undefined);
+  const fresh = one(again.jar, 'refreshToken', '/call/@_linked/auth');
+  assert.ok(fresh, 'the refresh cookie is replaced, not just the access cookie');
+  assert.notEqual(fresh.value, b);
+  const next = await rpc(app.url, 'validateToken', [null, { forceRefresh: true }], {
+    headers: { cookie: `refreshToken=${fresh.value}` },
+  });
+  assert.equal(next.body.error, undefined, 'the new cookie refreshes');
+});
+
 test('a failed refresh clears the cookies', async () => {
   const { jar } = await rpc(app.url, 'validateToken', [null, { forceRefresh: true }], {
     headers: { cookie: 'refreshToken=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
@@ -245,6 +269,34 @@ test('a refresh cookie written by an older client on path / is replaced by the s
     'legacy cookie on / cleared'
   );
   assert.ok(one(jar, 'refreshToken', '/call/@_linked/auth'), 'scoped cookie set');
+});
+
+test('an ordinary refresh does not clear a legacy cookie that is not there', async () => {
+  const signin = await rpc(app.url, 'signinFixture');
+  const scoped = one(signin.jar, 'refreshToken').value;
+  const refreshed = await rpc(app.url, 'validateToken', [null, { forceRefresh: true }], {
+    headers: { cookie: `refreshToken=${scoped}; linkedAuthSession=1` },
+  });
+  assert.equal(refreshed.body.error, undefined);
+  assert.equal(
+    (refreshed.jar.refreshToken || []).filter((c) => c.attrs.path === '/').length,
+    0,
+    'no Set-Cookie for refreshToken on / when only the scoped cookie was sent'
+  );
+});
+
+test('a refresh that carries both the scoped and a legacy cookie clears the legacy one', async () => {
+  const signin = await rpc(app.url, 'signinFixture');
+  const scoped = one(signin.jar, 'refreshToken').value;
+  // browsers send the more specific path first
+  const refreshed = await rpc(app.url, 'validateToken', [null, { forceRefresh: true }], {
+    headers: { cookie: `refreshToken=${scoped}; refreshToken=legacy; linkedAuthSession=1` },
+  });
+  assert.equal(refreshed.body.error, undefined);
+  assert.ok(
+    (refreshed.jar.refreshToken || []).some((c) => c.attrs.path === '/' && /1970/.test(c.attrs.expires)),
+    'legacy cookie on / cleared'
+  );
 });
 
 test('Secure follows https: req.secure behind a trusted proxy, plain http stays non-Secure', async () => {

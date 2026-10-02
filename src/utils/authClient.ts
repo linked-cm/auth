@@ -1,7 +1,8 @@
 /**
  * The client side of keeping a session alive (browser and native; no React).
  *
- * - **Scheduler**: refreshes the access token REFRESH_LEAD_MS (60 s) before its `exp`, and again
+ * - **Scheduler**: refreshes the access token REFRESH_LEAD_MS (60 s) before its `exp` — or half
+ *   way through its lifetime when it lives less than two minutes — and again
  *   when the page becomes visible or focused with a token that is (nearly) expired — timers are
  *   throttled or frozen in background tabs and while a laptop sleeps.
  * - **Single flight**: every caller that needs a refresh at the same moment (scheduler, focus,
@@ -16,12 +17,27 @@
  */
 import { Server } from '@_linked/server-utils/utils/Server';
 import { LincdServerProxy } from '@_linked/server-utils/utils/LincdServerProxy';
-import { jwtExpiryMs } from './token.js';
+import type { AuthHandler } from '@_linked/server-utils/utils/LincdServerProxy';
+import { decodeJwtPayload } from './token.js';
 
 /** Refresh this long before the access token expires. */
 export const REFRESH_LEAD_MS = 60 * 1000;
-/** Never schedule a refresh sooner than this after the previous one (guards against loops). */
-const MIN_REFRESH_DELAY_MS = 5 * 1000;
+/** Never schedule a refresh sooner than this (guards against tight loops). */
+const MIN_REFRESH_DELAY_MS = 1000;
+/** The smallest lead, for very short-lived tokens. */
+const MIN_LEAD_MS = 1000;
+
+/**
+ * How long before expiry to refresh a token that lives `lifetimeMs`: 60 s, or half its lifetime
+ * when that is shorter. A fixed 60 s lead on a 60 s token would refresh immediately after every
+ * refresh (clamped to the minimum delay): a loop.
+ */
+export function refreshLeadFor(lifetimeMs: number | undefined): number {
+  if (lifetimeMs === undefined || !Number.isFinite(lifetimeMs) || lifetimeMs <= 0) {
+    return REFRESH_LEAD_MS;
+  }
+  return Math.min(REFRESH_LEAD_MS, Math.max(MIN_LEAD_MS, Math.floor(lifetimeMs / 2)));
+}
 /** setTimeout's maximum delay (about 24.8 days); longer delays fire immediately. */
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 /** The path prefix of this package's RPC endpoints — never intercepted. */
@@ -42,6 +58,8 @@ let lastRefreshAtMs = 0;
 const FRESH_TOKEN_WINDOW_MS = 10 * 1000;
 let accessToken: string | undefined;
 let accessTokenExpiresAtMs: number | undefined;
+/** The lead in use for the current token (see refreshLeadFor). */
+let currentLeadMs = REFRESH_LEAD_MS;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let listenersInstalled = false;
 
@@ -113,13 +131,15 @@ export function setAccessToken(token: string | null | undefined, nowMs: number =
   } catch {
     // no server proxy (SITE_ROOT unset)
   }
-  const expMs = jwtExpiryMs(token);
+  const claims = decodeJwtPayload(token);
+  const expMs = typeof claims?.exp === 'number' ? claims.exp * 1000 : undefined;
+  const iatMs = typeof claims?.iat === 'number' ? claims.iat * 1000 : undefined;
   if (expMs !== undefined) {
     // A refresh that returned a token expiring no later than the one we had (the server had no
-    // refresh token to rotate) must not be rescheduled 60 s before that same exp — that would
+    // refresh token to rotate) must not be rescheduled ahead of that same exp — that would
     // loop. Check again at expiry instead; by then a refresh either works or signs out.
     const sameAsBefore = previousExpiry !== undefined && expMs <= previousExpiry;
-    scheduleRefreshAt(expMs, nowMs, sameAsBefore ? 0 : REFRESH_LEAD_MS);
+    scheduleRefreshAt(expMs, nowMs, sameAsBefore ? 0 : undefined, iatMs);
   } else {
     // not a readable JWT: nothing to schedule from
     accessTokenExpiresAtMs = undefined;
@@ -130,13 +150,21 @@ export function setAccessToken(token: string | null | undefined, nowMs: number =
 /**
  * Schedule the next refresh for a token that expires at `expMs` without holding the token
  * itself — after a server-rendered page load, the access token is an httpOnly cookie and the
- * client only knows its `exp` (from the auth data the server rendered).
+ * client only knows its `exp` (and `iat`) from the auth data the server rendered.
+ *
+ * @param leadMs how long before `exp` to refresh; by default from the token's lifetime
+ *   (`expMs - iatMs`, or the time left when `iatMs` is unknown), see refreshLeadFor
  */
 export function scheduleRefreshAt(
   expMs: number,
   nowMs: number = Date.now(),
-  leadMs: number = REFRESH_LEAD_MS
+  leadMs?: number,
+  iatMs?: number
 ) {
+  if (leadMs === undefined) {
+    leadMs = refreshLeadFor(iatMs !== undefined ? expMs - iatMs : expMs - nowMs);
+  }
+  currentLeadMs = leadMs;
   accessTokenExpiresAtMs = expMs;
   clearScheduledRefresh();
   const delay = Math.min(MAX_TIMEOUT_MS, Math.max(MIN_REFRESH_DELAY_MS, expMs - leadMs - nowMs));
@@ -154,9 +182,9 @@ export function clearScheduledRefresh() {
   }
 }
 
-/** Is the access token expired, or about to (within REFRESH_LEAD_MS)? */
+/** Is the access token expired, or about to (within the current lead)? */
 export function accessTokenNeedsRefresh(nowMs: number = Date.now()): boolean {
-  return accessTokenExpiresAtMs !== undefined && nowMs >= accessTokenExpiresAtMs - REFRESH_LEAD_MS;
+  return accessTokenExpiresAtMs !== undefined && nowMs >= accessTokenExpiresAtMs - currentLeadMs;
 }
 
 /** Called on visibilitychange / focus: refresh if the token expired while the tab slept. */
@@ -200,15 +228,17 @@ export function hasSessionHint(): boolean {
 
 type FetchLike = (url: string, init: RequestInit, retries?: number) => Promise<Response>;
 
-/**
- * The hook a future @_linked/server-utils exposes for this (see the package docs). Until it
- * exists, `installServerCallRetry` wraps `LincdServerProxy.prototype.fetchWithRetry`, the single
- * function every `Server.call` / `customPost` over HTTP goes through.
+/*
+ * @_linked/server-utils 1.8 calls an `AuthHandler` (registered with
+ * `LincdServerProxy.setAuthHandler`) around every HTTP `Server.call` / `customPost`: before the
+ * request, and after a 401 — resolving true resends the call once with the then-current default
+ * headers. `installServerCallRetry` registers one. With an older server-utils (an app that
+ * resolves another copy) it falls back to wrapping `LincdServerProxy.prototype.fetchWithRetry`.
+ *
+ * On the hook path the proxy rebuilds the retried request from the default headers, so the
+ * `Authorization` default must always match the session: `setAccessToken(null)` removes it
+ * (sign-out, failed refresh), and a refresh always sets the new token.
  */
-interface ServerCallAuthHandler {
-  beforeRequest?(url: string, init: RequestInit): Promise<void> | void;
-  onUnauthorized?(url: string, response: Response): Promise<boolean> | boolean;
-}
 
 function isAuthCall(url: string): boolean {
   try {
@@ -278,8 +308,8 @@ let retryInstalled = false;
 /**
  * Make `Server.call` refresh and retry once on 401. Idempotent.
  *
- * Uses `LincdServerProxy.setAuthHandler` when @_linked/server-utils provides it; otherwise wraps
- * `LincdServerProxy.prototype.fetchWithRetry` (present since server-utils 1.4). With neither,
+ * Uses `LincdServerProxy.setAuthHandler` (server-utils 1.8+); with an older copy it falls back to
+ * wrapping `LincdServerProxy.prototype.fetchWithRetry` (server-utils 1.4–1.7). With neither,
  * calls are not retried — the scheduler still refreshes ahead of expiry — and a warning is logged.
  * Returns false in that case.
  */
@@ -287,7 +317,7 @@ export function installServerCallRetry(): boolean {
   if (retryInstalled) return true;
   const proxyClass: any = LincdServerProxy;
   if (typeof proxyClass?.setAuthHandler === 'function') {
-    const handler: ServerCallAuthHandler = {
+    const handler: AuthHandler = {
       beforeRequest: (url) => beforeRequest(url),
       onUnauthorized: (url) => onUnauthorized(url),
     };
@@ -308,11 +338,16 @@ export function installServerCallRetry(): boolean {
   return false;
 }
 
-/** Reset all client state (tests, sign-out). Does not uninstall the retry wrapper. */
+/**
+ * Reset all client state (sign-out, an ended session, tests): forget the token, remove the
+ * `Authorization` default header, cancel the scheduled refresh. Does not uninstall the retry hook.
+ */
 export function resetAuthClient() {
+  setAccessToken(null);
   clearScheduledRefresh();
   accessToken = undefined;
   accessTokenExpiresAtMs = undefined;
   inFlight = undefined;
   lastRefreshAtMs = 0;
+  currentLeadMs = REFRESH_LEAD_MS;
 }

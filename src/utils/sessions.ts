@@ -8,8 +8,10 @@
  *    `replacedBy`).
  * Presenting a token that was already replaced means two parties hold the same token, so the
  * whole session is revoked — unless it happens within REFRESH_REUSE_GRACE_MS of the rotation and
- * the session is still alive, which is what two tabs refreshing at once look like. In that case
- * the caller gets a new access token but no new refresh token (see `rotateRefreshToken`).
+ * the session is still alive, which is what two tabs refreshing at once (or a response lost to a
+ * navigation) look like. In that case the caller gets a new access token and a fresh refresh
+ * token in the same session, because a browser holding an httpOnly cookie cannot recover the
+ * replacement it missed (see `rotateRefreshToken`).
  *
  * Signing out revokes the session; a password reset revokes every session of the account; removing
  * the account deletes its records.
@@ -332,7 +334,7 @@ export type RotateResult =
       ok: true;
       accountId: string;
       sessionId: string;
-      /** The replacement token. Absent on a grace-window reuse: the caller keeps the token it has. */
+      /** The replacement token (also on a grace-window reuse: a fresh token in the same session). */
       refreshToken?: string;
       /** When the replacement token expires (absent with it). */
       refreshTokenExpiresAt?: Date;
@@ -417,10 +419,25 @@ async function doRotate(tokenHash: string, now: Date): Promise<RotateResult> {
     const sinceRevoked = now.getTime() - record.revokedAt.getTime();
     if (record.replacedBy && sinceRevoked <= REFRESH_REUSE_GRACE_MS) {
       if (await successorIsAlive(record, now)) {
+        // The caller missed the response that carried the replacement (a navigation aborted
+        // it, or another tab sent the same cookie at the same moment). With an httpOnly cookie
+        // it cannot recover that token, so it gets a fresh one in the same session. Without
+        // this, the token it still holds would count as reuse after the grace window and end
+        // the session. The replaced record keeps pointing at its first successor, so presenting
+        // it AFTER the grace window is still detected as reuse.
+        const sessionStartedAt = await sessionStartOf(record);
+        const next = await issueRefreshToken(
+          record.accountId,
+          record.sessionId,
+          now,
+          sessionStartedAt
+        );
         return {
           ok: true,
           accountId: record.accountId,
           sessionId: record.sessionId,
+          refreshToken: next.refreshToken,
+          refreshTokenExpiresAt: next.expiresAt,
         };
       }
       return { ok: false, reason: 'revoked' };

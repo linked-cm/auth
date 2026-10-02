@@ -175,10 +175,28 @@ export function setAuthCookies(
   return true;
 }
 
+/**
+ * Did the browser send a refresh cookie written on `/` by an earlier release (from JS)?
+ *
+ * On the auth endpoints the scoped cookie and a legacy one are both called `refreshToken`, and
+ * the parsed `req.cookies` keeps only one, so this reads the raw Cookie header:
+ * - two `refreshToken` values → the scoped one and a legacy one;
+ * - one value without the `linkedAuthSession` hint → legacy (the server always sets the hint
+ *   together with the scoped cookie, with the same lifetime).
+ */
+export function hasLegacyRefreshCookie(req: any): boolean {
+  const raw: string = req?.headers?.cookie || '';
+  if (!raw) return false;
+  const names = raw.split(';').map((part) => part.trim().split('=')[0]);
+  const refreshCount = names.filter((name) => name === REFRESH_COOKIE).length;
+  if (refreshCount >= 2) return true;
+  return refreshCount === 1 && !names.includes(SESSION_HINT_COOKIE);
+}
+
 function clearLegacyRefreshCookie(req: any, response: any) {
   if (refreshCookiePath() === '/') return;
   // only when the browser actually sent one: a cookie on `/` from an earlier release
-  if (req?.cookies?.[REFRESH_COOKIE] === undefined) return;
+  if (!hasLegacyRefreshCookie(req)) return;
   const { maxAge, ...options } = refreshCookieOptions(req);
   response.clearCookie(REFRESH_COOKIE, { ...options, path: '/' });
 }
