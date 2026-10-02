@@ -1,5 +1,11 @@
 # @\_linked/auth
 
+## 1.6.5
+
+### Patch Changes
+
+- [#58](https://github.com/linked-fw/auth/pull/58) [`514ea33`](https://github.com/linked-fw/auth/commit/514ea330ec55865081c90137440ba2070a0badb9) Thanks [@renovate](https://github.com/apps/renovate)! - Drop the unused `chalk` dependency. Nothing in the package imported it.
+
 ## 1.6.4
 
 ### Patch Changes
