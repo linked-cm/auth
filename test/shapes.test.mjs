@@ -32,6 +32,7 @@ test('every RefreshToken property is declared for the DSL', () => {
     lastUsedAt: { dateTime: true },
     revokedAt: { dateTime: true },
     replacedBy: {},
+    sessionStartedAt: { dateTime: true },
   };
   assert.deepEqual(Object.keys(props).sort(), Object.keys(expected).sort());
   for (const [label, want] of Object.entries(expected)) {

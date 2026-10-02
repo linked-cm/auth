@@ -16,7 +16,8 @@ export type AuthenticationResult =
   | ({
       auth: AuthSession;
       accessToken: string;
-      refreshToken: string;
+      /** Only for native clients (body transport); browsers get it as an httpOnly cookie. */
+      refreshToken?: string;
     } & RefreshTokenExpiry)
   | {
       error: string;
@@ -44,7 +45,8 @@ export type CreateAccount = {
 export type AuthenticationResponse = {
   auth: AuthSession;
   accessToken: string;
-  refreshToken: string;
+  /** Only for native clients (body transport); browsers get it as an httpOnly cookie. */
+  refreshToken?: string;
 } & RefreshTokenExpiry;
 
 export type UserData = QResult<
@@ -77,7 +79,8 @@ export type AuthSession<UserAccount = UserAccountData, User = UserData> = {
   ) => Promise<{
     auth: AuthSession;
     accessToken: string;
-    refreshToken: string;
+    /** Only for native clients (body transport); browsers get it as an httpOnly cookie. */
+    refreshToken?: string;
   }>;
 };
 

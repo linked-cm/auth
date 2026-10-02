@@ -13,6 +13,7 @@ import type {
 import { createAccessToken, createToken } from './jwt.js';
 import { findRefreshTokenExpiry } from './sessions.js';
 import { refreshTokenExpiryFields } from './token.js';
+import { deliverTokens } from './cookies.js';
 import type { RefreshTokenExpiry } from './token.js';
 import { QResult } from '@_linked/core/queries/SelectQuery';
 import { BackendProvider } from '@_linked/server-utils/utils/BackendProvider.js';
@@ -112,13 +113,19 @@ export class Auth {
       // set authentication to the request, remembering the session for updateSessionData
       Auth.setAuthentication(request, { ...authentication, sid: sessionId });
 
-      return {
-        auth: authentication,
-        accessToken,
-        refreshToken,
-        // the client sizes the refresh cookie from this (the server's TTL is not visible there)
-        ...refreshTokenExpiryFields(refreshTokenExpiresAt),
-      } as AuthenticationResult;
+      // Set the httpOnly cookies; the refresh token stays in the body only for native clients.
+      return deliverTokens(
+        request,
+        (provider as any).response,
+        {
+          auth: authentication,
+          accessToken,
+          refreshToken,
+          // the server's lifetimes are not visible on the client: say when the session ends
+          ...refreshTokenExpiryFields(refreshTokenExpiresAt),
+        },
+        { refreshTokenExpiresAt }
+      ) as AuthenticationResult;
     } catch (err) {
       console.error('Failed to create token', err);
       throw err;
@@ -170,7 +177,8 @@ export class Auth {
       {
         auth: AuthSession;
         accessToken: string;
-        refreshToken: string;
+        /** Only for native clients (body transport); browsers get it as an httpOnly cookie. */
+        refreshToken?: string;
       } & RefreshTokenExpiry
     > => {
       // create completely new user and userAccount objects to avoid reference issues
@@ -217,6 +225,7 @@ export class Auth {
           undefined,
           currentSessionId
         );
+        // only sent to the auth endpoints (cookie path), so usually absent here
         refreshToken = (request as any).cookies?.refreshToken;
         if (refreshToken) {
           refreshTokenExpiresAt = await findRefreshTokenExpiry(refreshToken);
@@ -228,15 +237,22 @@ export class Auth {
         newAuthSession.sid = sessionId;
       }
 
-      return {
-        auth: {
-          user: request.linkedAuth.user,
-          userAccount: request.linkedAuth.userAccount,
+      // The new access token replaces the cookie as well, so a reload renders the updated
+      // session. The refresh cookie is only (re)set when a new session was started.
+      return deliverTokens(
+        request,
+        (request as any).res,
+        {
+          auth: {
+            user: request.linkedAuth.user,
+            userAccount: request.linkedAuth.userAccount,
+          },
+          accessToken,
+          refreshToken,
+          ...refreshTokenExpiryFields(refreshTokenExpiresAt),
         },
-        accessToken,
-        refreshToken,
-        ...refreshTokenExpiryFields(refreshTokenExpiresAt),
-      };
+        { refreshTokenExpiresAt, newRefreshToken: !currentSessionId }
+      );
     };
 
     const linkedAuth = {

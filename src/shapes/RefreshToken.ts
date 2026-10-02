@@ -104,4 +104,19 @@ export class RefreshToken extends Shape {
   get replacedBy(): string {
     return '';
   }
+
+  /**
+   * When the session (the sign-in this token family started with) began. Copied to every
+   * rotation, so the absolute session lifetime (`AUTH_SESSION_MAX_TTL`) is checked without
+   * loading the family. Optional: records from before it existed fall back to the earliest
+   * `createdAt` of their session.
+   */
+  @literalProperty({
+    path: auth.sessionStartedAt,
+    datatype: xsd.dateTime,
+    maxCount: 1,
+  })
+  get sessionStartedAt(): Date {
+    return undefined as any;
+  }
 }

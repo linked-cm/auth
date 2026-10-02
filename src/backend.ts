@@ -30,7 +30,10 @@ import {
   revokeAllSessionsForAccount,
   revokeSession,
   rotateRefreshToken,
+  startSessionCleanup,
+  stopSessionCleanup,
 } from './utils/sessions.js';
+import { clearAuthCookies, deliverTokens } from './utils/cookies.js';
 import { assertAuthSecrets } from './utils/secrets.js';
 import { refreshTokenExpiryFields } from './utils/token.js';
 import {
@@ -94,6 +97,10 @@ export default class AuthBackendProvider extends BackendProvider {
       }
     };
     onAccountWillBeRemoved(this.accountRemovedListener);
+
+    // Delete long-revoked/expired refresh token records in the background (at most daily per
+    // process; AUTH_SESSION_CLEANUP=false turns it off).
+    startSessionCleanup();
 
     // set the user and account shapes for auth
     Auth.userType = this.userShape;
@@ -169,6 +176,7 @@ export default class AuthBackendProvider extends BackendProvider {
     // Plan-011 — remove the middleware we tracked above + unsubscribe
     // the account-removed listener so HMR doesn't leak handlers.
     this.disposeRoutes();
+    stopSessionCleanup();
     if (this.accountRemovedListener) {
       offAccountWillBeRemoved(this.accountRemovedListener);
       this.accountRemovedListener = undefined;
@@ -182,11 +190,8 @@ export default class AuthBackendProvider extends BackendProvider {
    * @returns the access token if it is valid, otherwise null
    */
   async validateRequestToken(request, _accessTokenExpired: boolean = false) {
-    // get the token from request headers or cookies
-    let token = this.getTokenFromRequest(request);
-
-    // if token is found, validate it
-    if (token) {
+    // the Bearer header first, then the `accessToken` cookie (see getTokenCandidates)
+    for (const token of this.getTokenCandidates(request)) {
       const verificationResult = await verifyToken({
         request,
         token,
@@ -1037,20 +1042,22 @@ export default class AuthBackendProvider extends BackendProvider {
   }
 
   /**
-   * Sign out: revoke the current session, so its refresh token can no longer be used.
+   * Sign out: revoke the current session, so its refresh token can no longer be used, and clear
+   * the auth cookies.
    *
    * The session is taken from the access token (`sid`) and/or from the refresh token the client
-   * passes (or sends as the `refreshToken` cookie). The access token itself stays valid until it
-   * expires.
+   * passes (native clients) or sends as the `refreshToken` cookie. The access token itself stays
+   * valid until it expires (at most AUTH_ACCESS_TOKEN_TTL).
    *
    * @param refreshToken - Optional refresh token of the session to end
    * @returns true if the user was signed in or a session was revoked
    */
   async signout(refreshToken?: string): Promise<boolean> {
+    const request = this.request;
+    const response = this.response;
     try {
-      const auth: any = this.request?.linkedAuth;
-      refreshToken =
-        refreshToken || this.getRefreshTokenFromRequest(this.request);
+      const auth: any = request?.linkedAuth;
+      refreshToken = refreshToken || this.getRefreshTokenFromRequest(request);
 
       const sessionIds = new Set<string>();
       if (auth?.sid) {
@@ -1069,27 +1076,37 @@ export default class AuthBackendProvider extends BackendProvider {
     } catch (err) {
       console.warn('error during signout: ', err.toString());
       throw err;
+    } finally {
+      // whatever happened to the session, this browser is signed out
+      clearAuthCookies(request, response);
     }
   }
 
   /**
    * Validate the client's tokens and return the authentication result. This is also where the
-   * client refreshes: it is the one call whose response delivers new tokens to the client.
+   * client refreshes: the response sets new cookies and carries the new access token.
    *
-   * - A valid access token: returned as is, together with the refresh token passed in.
-   * - Otherwise, with a refresh token: the refresh token is exchanged (see utils/sessions.ts) for
-   *   a new access token and, normally, a new refresh token. The old refresh token is then dead.
+   * - A valid access token (and no `forceRefresh`): returned as is.
+   * - Otherwise, with a refresh token (the httpOnly `refreshToken` cookie, or the argument from a
+   *   native client): the refresh token is exchanged (see utils/sessions.ts) for a new access
+   *   token and, normally, a new refresh token. The old refresh token is then dead.
+   * - A refresh that fails clears the auth cookies.
    *
-   * @param refreshToken - Optional refresh token (defaults to the `refreshToken` cookie)
+   * @param refreshToken - Optional refresh token (native clients; browsers send the cookie)
+   * @param options.forceRefresh - refresh even if the access token is still valid (the client's
+   *   scheduler does this shortly before `exp`)
    * @returns A promise that resolves to an authentication result
    */
-  async validateToken(refreshToken?: string): Promise<AuthenticationResult> {
-    // get the token from request headers or cookies
+  async validateToken(
+    refreshToken?: string,
+    options: { forceRefresh?: boolean } = {}
+  ): Promise<AuthenticationResult> {
     const request = this.request;
-    const token = this.getTokenFromRequest(request);
+    const response = this.response;
     refreshToken = refreshToken || this.getRefreshTokenFromRequest(request);
+    const candidates = this.getTokenCandidates(request);
 
-    if (!token && !refreshToken) {
+    if (candidates.length === 0 && !refreshToken) {
       // no token found in Authorization header or cookies
       return {
         error: 'No token found',
@@ -1097,20 +1114,35 @@ export default class AuthBackendProvider extends BackendProvider {
     }
 
     try {
-      const payload = token ? verifyAccessToken(token) : false;
-      if (payload) {
+      let token: string | undefined;
+      let payload: ReturnType<typeof verifyAccessToken> = false;
+      for (const candidate of candidates) {
+        payload = verifyAccessToken(candidate);
+        if (payload) {
+          token = candidate;
+          break;
+        }
+      }
+      if (payload && !(options?.forceRefresh && refreshToken)) {
         const authentication = Auth.setAuthentication(request, payload);
-        // The client stores the echoed refresh token again: tell it how long the server will
-        // honour it, so the cookie does not outlive the record.
+        // Tell the client how long the server honours its refresh token.
         const refreshTokenExpiresAt = refreshToken
           ? await findRefreshTokenExpiry(refreshToken)
           : undefined;
-        return {
-          auth: authentication,
-          accessToken: token,
-          refreshToken,
-          ...refreshTokenExpiryFields(refreshTokenExpiresAt),
-        };
+        // Re-set the access cookie when the browser does not hold this token as an httpOnly
+        // cookie yet (it came from the header, or from a cookie written by an older client).
+        const cookieIsCurrent = (request as any)?.cookies?.accessToken === token;
+        return deliverTokens(
+          request,
+          cookieIsCurrent ? false : response,
+          {
+            auth: authentication,
+            accessToken: token,
+            refreshToken,
+            ...refreshTokenExpiryFields(refreshTokenExpiresAt),
+          },
+          { newRefreshToken: false }
+        );
       }
 
       if (refreshToken) {
@@ -1136,8 +1168,11 @@ export default class AuthBackendProvider extends BackendProvider {
   protected async refreshSession(
     refreshToken: string
   ): Promise<AuthenticationResult> {
+    const request = this.request;
+    const response = this.response;
     const rotation = await rotateRefreshToken(refreshToken);
     if (rotation.ok === false) {
+      clearAuthCookies(request, response);
       return {
         error: 'Invalid refresh token',
       };
@@ -1147,6 +1182,7 @@ export default class AuthBackendProvider extends BackendProvider {
     if (!account) {
       // the account is gone; nothing may be refreshed for it any more
       await revokeSession(rotation.sessionId);
+      clearAuthCookies(request, response);
       return {
         error: 'Invalid refresh token',
       };
@@ -1159,18 +1195,22 @@ export default class AuthBackendProvider extends BackendProvider {
       undefined,
       rotation.sessionId
     );
-    const linkedAuth = Auth.setAuthentication(this.request, {
+    const linkedAuth = Auth.setAuthentication(request, {
       ...authentication,
       sid: rotation.sessionId,
     });
 
-    return {
-      auth: linkedAuth,
-      accessToken,
-      // absent on a concurrent-tab refresh: the client keeps the refresh token it has
-      refreshToken: rotation.refreshToken,
-      ...refreshTokenExpiryFields(rotation.refreshTokenExpiresAt),
-    };
+    return deliverTokens(
+      request,
+      response,
+      {
+        auth: linkedAuth,
+        accessToken,
+        refreshToken: rotation.refreshToken,
+        ...refreshTokenExpiryFields(rotation.refreshTokenExpiresAt),
+      },
+      { refreshTokenExpiresAt: rotation.refreshTokenExpiresAt }
+    );
   }
 
   /** The account a refresh token was issued to, with the fields a sign-in provides. */
@@ -1206,26 +1246,34 @@ export default class AuthBackendProvider extends BackendProvider {
   }
 
   /**
-   * Gets the access token from the request.
-   * This method checks the Authorization header for a Bearer token
-   * or looks for a cookie named 'accessToken'.
-   * @param req
+   * Gets the access token from the request: the Bearer header, else the `accessToken` cookie.
    * @protected
    */
   protected getTokenFromRequest(req: Request) {
-    if (
-      req.headers.authorization &&
-      req.headers.authorization.split(' ')[0] === 'Bearer'
-    ) {
-      return req.headers.authorization.split(' ')[1];
-    } else if (req.cookies && req.cookies.accessToken) {
-      return req.cookies.accessToken;
-    }
-    return null;
+    return this.getTokenCandidates(req)[0] ?? null;
   }
 
-  // get refresh token from request
+  /**
+   * The access tokens a request carries, in the order they are tried: the Bearer header first,
+   * then the `accessToken` cookie. Both are tried because a browser tab may hold a stale token in
+   * memory (sent as the header) while the httpOnly cookie was already renewed by another tab.
+   * @protected
+   */
+  protected getTokenCandidates(req: Request): string[] {
+    const tokens: string[] = [];
+    const header = req?.headers?.authorization;
+    if (header && header.split(' ')[0] === 'Bearer' && header.split(' ')[1]) {
+      tokens.push(header.split(' ')[1]);
+    }
+    const cookie = (req as any)?.cookies?.accessToken;
+    if (cookie && !tokens.includes(cookie)) {
+      tokens.push(cookie);
+    }
+    return tokens;
+  }
+
+  // get refresh token from request (the httpOnly cookie)
   protected getRefreshTokenFromRequest(req: Request) {
-    return req?.cookies && req.cookies.refreshToken;
+    return (req as any)?.cookies && (req as any).cookies.refreshToken;
   }
 }

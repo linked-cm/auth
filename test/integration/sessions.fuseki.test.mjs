@@ -29,6 +29,7 @@ process.env.NODE_ENV = 'test';
 process.env.SITE_ROOT = SITE_ROOT;
 process.env.JWT_SECRET = SECRET;
 process.env.SESSION_SECRET = 'integration-test-session-secret';
+process.env.AUTH_SESSION_CLEANUP = 'false';
 
 const DATASET = `linked-auth-test-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
 const authHeader = 'Basic ' + Buffer.from(`${USER}:${PASSWORD}`).toString('base64');
@@ -38,6 +39,7 @@ const { default: jwt } = await import('jsonwebtoken');
 const { FusekiStore } = await import('@_linked/fuseki/shapes/FusekiStore');
 const { LinkedStorage } = await import('@_linked/core/utils/LinkedStorage');
 await import(new URL('shapes/index.js', libDir));
+const sessions = await import(new URL('utils/sessions.js', libDir));
 const { default: AuthBackendProvider } = await import(new URL('backend.js', libDir));
 
 const fakeLincdServer = { callGenericBackendProvidersMethod: async () => {} };
@@ -81,7 +83,15 @@ after(async () => {
 
 afterEach(() => mock.timers.reset());
 
+/**
+ * A provider handling one request. By default the request asks for the NATIVE token contract
+ * (refresh token in the body), which these flows were written against; `web: true` leaves the
+ * header off, so the refresh token only travels as an httpOnly cookie.
+ */
 function provider(request = { headers: {}, cookies: {} }) {
+  if (!request.web) {
+    request.headers = { 'x-linked-auth-transport': 'body', ...request.headers };
+  }
   const p = new AuthBackendProvider(null, fakeLincdServer);
   p.request = request;
   return p;
@@ -255,4 +265,187 @@ test('the RefreshToken shape refuses a record without its required fields', asyn
     PREFIX auth: <https://linked.cm/ont/auth/>
     SELECT ?s WHERE { { ?s auth:sessionId "incomplete" } UNION { GRAPH ?g { ?s auth:sessionId "incomplete" } } }`);
   assert.equal(rows.length, 0, 'nothing was stored');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Server-set cookies, session lifetime and cleanup against the real store
+// ---------------------------------------------------------------------------------------------
+
+/** A response that records the cookies the provider sets (what Express would send). */
+function recordingResponse() {
+  const set = {};
+  const cleared = [];
+  return {
+    set,
+    cleared,
+    headersSent: false,
+    cookie(name, value, options) {
+      set[name] = { value, options };
+    },
+    clearCookie(name, options) {
+      cleared.push({ name, path: options?.path });
+    },
+  };
+}
+
+/** A browser request: no body-transport header, tokens only in cookies. */
+function browserProvider(cookies = {}) {
+  const request = { web: true, headers: {}, cookies };
+  const response = recordingResponse();
+  request.res = response;
+  const p = provider(request);
+  p.response = response;
+  return { p, request, response };
+}
+
+async function recordFor(refreshToken) {
+  const hash = crypto.createHash('sha256').update(refreshToken).digest('base64url');
+  const rows = await sparql(`
+    PREFIX auth: <https://linked.cm/ont/auth/>
+    SELECT ?p ?o WHERE {
+      { GRAPH ?g { ?s auth:tokenHash "${hash}" ; ?p ?o } }
+      UNION { ?s auth:tokenHash "${hash}" ; ?p ?o }
+    }`);
+  return Object.fromEntries(rows.map((r) => [r.p.value.split('/').pop(), r.o.value]));
+}
+
+let webEmail;
+test('browser sign-in and refresh: httpOnly cookies, no refresh token in the body, rotation in the store', async () => {
+  webEmail = `grace-${crypto.randomBytes(4).toString('hex')}@example.test`;
+  const signup = browserProvider();
+  const created = await signup.p.createAccount({
+    firstName: 'Grace',
+    lastName: 'Hopper',
+    email: webEmail,
+    password: PASSWORD_1,
+  });
+  assert.equal(created.error, undefined, created.error);
+  assert.equal(created.refreshToken, undefined, 'no refresh token in the body');
+  const refreshCookie = signup.response.set.refreshToken;
+  assert.ok(refreshCookie, 'refresh cookie set by the server');
+  assert.equal(refreshCookie.options.httpOnly, true);
+  assert.equal(refreshCookie.options.sameSite, 'strict');
+  assert.equal(refreshCookie.options.path, '/call/@_linked/auth');
+  assert.equal(refreshCookie.options.secure, true, 'SITE_ROOT is https');
+  const stored = await recordFor(refreshCookie.value);
+  assert.ok(
+    Math.abs(Date.parse(stored.expiresAt) - (Date.now() + refreshCookie.options.maxAge)) < 2000,
+    'cookie maxAge = the stored expiry'
+  );
+  assert.ok(stored.sessionStartedAt, 'session start stored');
+  assert.equal(signup.response.set.accessToken.value, created.accessToken);
+  assert.equal(signup.response.set.accessToken.options.httpOnly, true);
+
+  const later = browserProvider({ refreshToken: refreshCookie.value });
+  const refreshed = await later.p.validateToken(undefined, { forceRefresh: true });
+  assert.equal(refreshed.error, undefined, refreshed.error);
+  assert.equal(refreshed.refreshToken, undefined);
+  const rotated = later.response.set.refreshToken.value;
+  assert.notEqual(rotated, refreshCookie.value, 'rotated');
+  assert.ok((await recordFor(refreshCookie.value)).revokedAt, 'old record revoked in the store');
+  assert.equal(
+    (await recordFor(rotated)).sessionStartedAt,
+    stored.sessionStartedAt,
+    'the session start is carried to the new record'
+  );
+
+  // sign-out with the cookie only: revoked in the store, cookies cleared
+  const out = browserProvider({ refreshToken: rotated });
+  assert.equal(await out.p.signout(), true);
+  assert.ok(out.response.cleared.some((c) => c.name === 'refreshToken'));
+  assert.ok(out.response.cleared.some((c) => c.name === 'accessToken'));
+  assert.ok((await recordFor(rotated)).revokedAt, 'revoked by sign-out');
+});
+
+test('idle timeout: a session idle past AUTH_SESSION_IDLE_TTL cannot refresh and is revoked', async () => {
+  const limits = sessions.getSessionLimits();
+  const signin = await provider().signinWithPassword(webEmail, PASSWORD_1);
+  assert.equal(signin.error, undefined, signin.error);
+  mock.timers.enable({ apis: ['Date'], now: Date.now() + 2 * 3600 * 1000 });
+  sessions.setSessionLimits({ idleTtl: 3600 });
+  try {
+    const result = await refresh(signin);
+    assert.ok(result.error, 'refused after 2 h idle with a 1 h idle limit');
+    assert.ok((await recordFor(signin.refreshToken)).revokedAt, 'session revoked in the store');
+  } finally {
+    sessions.setSessionLimits(limits);
+  }
+});
+
+test('absolute lifetime: a session older than AUTH_SESSION_MAX_TTL cannot refresh, even when active', async () => {
+  const limits = sessions.getSessionLimits();
+  const signin = await provider().signinWithPassword(webEmail, PASSWORD_1);
+  mock.timers.enable({ apis: ['Date'], now: Date.now() + 30 * 60 * 1000 });
+  const step1 = await refresh(signin);
+  assert.equal(step1.error, undefined, 'refreshing after 30 min is fine');
+  sessions.setSessionLimits({ maxTtl: 45 * 60, idleTtl: 0 });
+  mock.timers.tick(20 * 60 * 1000);
+  try {
+    const step2 = await refresh(step1);
+    assert.ok(step2.error, '50 min after sign-in with a 45 min maximum');
+  } finally {
+    sessions.setSessionLimits(limits);
+  }
+});
+
+test('absolute lifetime for records without sessionStartedAt: the first createdAt of the family (graph query)', async () => {
+  const store = new sessions.GraphRefreshSessionStore();
+  const accountId = (await provider().signinWithPassword(webEmail, PASSWORD_1)).auth.userAccount.id;
+  const now = Date.now();
+  const raw = sessions.generateRefreshToken();
+  const sessionId = `legacy-${crypto.randomBytes(4).toString('hex')}`;
+  await store.create({
+    tokenHash: 'legacy-first-' + sessionId,
+    sessionId,
+    accountId,
+    createdAt: new Date(now - 61 * 86400_000),
+    expiresAt: new Date(now - 1 * 86400_000),
+    revokedAt: new Date(now - 1 * 86400_000),
+  });
+  await store.create({
+    tokenHash: sessions.hashRefreshToken(raw),
+    sessionId,
+    accountId,
+    createdAt: new Date(now - 1 * 86400_000),
+    lastUsedAt: new Date(now - 1 * 86400_000),
+    expiresAt: new Date(now + 59 * 86400_000),
+  });
+  const result = await sessions.rotateRefreshToken(raw);
+  assert.deepEqual(result, { ok: false, reason: 'session-expired' });
+});
+
+test('cleanupExpiredSessions deletes only long-revoked/expired records from the graph', async () => {
+  const store = new sessions.GraphRefreshSessionStore();
+  const accountId = (await provider().signinWithPassword(webEmail, PASSWORD_1)).auth.userAccount.id;
+  const now = new Date();
+  const day = 86400_000;
+  const tag = crypto.randomBytes(4).toString('hex');
+  const make = (name, fields) =>
+    store.create({
+      tokenHash: `${name}-${tag}`,
+      sessionId: `cleanup-${tag}`,
+      accountId,
+      createdAt: new Date(now - 90 * day),
+      expiresAt: new Date(now.getTime() + day),
+      ...fields,
+    });
+  await make('active', {});
+  await make('recentlyRevoked', { revokedAt: new Date(now - day) });
+  await make('recentlyExpired', { expiresAt: new Date(now - day) });
+  await make('oldRevoked', { revokedAt: new Date(now - 40 * day) });
+  await make('oldExpired', { expiresAt: new Date(now - 40 * day) });
+
+  const remaining = async () =>
+    (
+      await sparql(`
+        PREFIX auth: <https://linked.cm/ont/auth/>
+        SELECT ?h WHERE { { ?s auth:sessionId "cleanup-${tag}" ; auth:tokenHash ?h } UNION { GRAPH ?g { ?s auth:sessionId "cleanup-${tag}" ; auth:tokenHash ?h } } }`)
+    )
+      .map((r) => r.h.value.replace(`-${tag}`, ''))
+      .sort();
+
+  assert.equal((await remaining()).length, 5);
+  const deleted = await sessions.cleanupExpiredSessions(store, { olderThan: 30 * 86400, now });
+  assert.ok(deleted >= 2, `deleted ${deleted}`);
+  assert.deepEqual(await remaining(), ['active', 'recentlyExpired', 'recentlyRevoked']);
 });

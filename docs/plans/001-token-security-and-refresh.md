@@ -1,9 +1,11 @@
 ---
 summary: >
-  Close the token holes in @_linked/auth (refresh tokens accepted as access tokens, hard-coded
+  Steps 1-3 done. Close the token holes in @_linked/auth (refresh tokens accepted as access tokens, hard-coded
   secret fallbacks, a verification cache that serves expired tokens) and make refresh actually
   work: opaque refresh tokens stored as SHA-256 hashes, rotated on every use, with reuse
-  detection and revocation on sign-out, password reset and account removal.
+  detection and revocation on sign-out, password reset and account removal. Step 3: server-set
+  httpOnly cookies, a client refresh scheduler with single-flight refresh and retry-on-401,
+  15-minute access tokens, idle/absolute session limits and cleanup of old records.
 ---
 
 # 001 — Token security and stored refresh tokens
@@ -106,15 +108,162 @@ Recommendation: A now; B when session management UI or idle timeout is built. No
 namespace is still `http://lincd.org/ont/auth/` — renaming it is a separate migration, not part of
 this work.
 
-## Step 3 — follow-ups (not in this change)
+## Step 3 — server-set cookies, refresh scheduler, session lifetime (done)
 
-- Server-set `httpOnly; Secure; SameSite` cookies instead of js-cookie (tokens are readable by JS today).
-- Client refresh scheduler (refresh shortly before `exp`) and a 401-retry-after-refresh in `Server.call`.
-- Shorter production access lifetime (minutes, not 10 days) — only after the scheduler, otherwise users
-  are bounced. Until then an access token stays valid until `exp` after sign-out.
-- Idle timeout / absolute session lifetime (arch-08: per-workspace session timeout).
-- A cleanup job deleting expired and long-revoked `RefreshToken` records.
-- CN: replace `reconstructLinkedAuthFromToken`'s `jwt.verify` with `verifyAccessToken`.
+Status: [x] server-set cookies · [x] client scheduler + single flight + 401 retry · [x] 15 min
+access tokens · [x] idle timeout + absolute lifetime · [x] cleanup job ·
+[x] `Server.call` auth hook — @_linked/server-utils 1.8 `setAuthHandler` (auth requires ^1.8.0) ·
+[ ] CN: `reconstructLinkedAuthFromToken` → `verifyAccessToken` (still open from step 1).
+
+### Transport
+
+| Cookie (set by the server) | httpOnly | SameSite | Path | Max-Age |
+|---|---|---|---|---|
+| `accessToken` | yes | Lax | `/` | the JWT's `exp` |
+| `refreshToken` | yes | Strict | `/call/@_linked/auth` | the record's `expiresAt` |
+| `linkedAuthSession` = `1` | no | Lax | `/` | as the refresh token |
+
+- **Access token**: httpOnly cookie for full page loads (SSR — the middleware already read the
+  `accessToken` cookie, so `request.linkedAuth` keeps working unchanged), **plus** the token in the
+  response body, which the client keeps in memory only and sends as `Authorization: Bearer` with
+  `Server.call`. Lax, so following a link from another site still renders signed in.
+  The server tries the Bearer header first and falls back to the cookie, so a stale in-memory
+  token does not hide a cookie another tab renewed.
+- **Refresh token**: httpOnly, Strict, and scoped to this package's RPC path, so it travels only to
+  `validateToken`/`signout`/sign-in calls — never with page loads, assets or other packages' RPCs.
+  It is removed from response bodies for browsers. Strict does not break the dev iframe sign-in:
+  CN's `/auth/dev` iframe is same-origin and the cookies are set by the parent's `signinDev` RPC,
+  a same-site fetch. (A frontend on another site needs `AUTH_COOKIE_SAMESITE=none`.)
+- **Hint cookie** (`linkedAuthSession`, no secret): tells the client a refresh cookie exists, so an
+  anonymous page load does not pay a refresh round trip. Legacy JS cookies count as a hint too.
+- **Secure**: `req.secure` (honours `trust proxy`) or `SITE_ROOT` https. A https SITE_ROOT with an
+  http request logs a one-time warning to set `trust proxy`; cookies stay Secure (browsers reach
+  the site over https anyway). Overrides: `AUTH_COOKIE_SECURE`, `AUTH_COOKIE_SAMESITE`,
+  `AUTH_COOKIE_DOMAIN`, `AUTH_REFRESH_COOKIE_PATH`.
+- **Native** (`setAuthTokenStorageMethods`): unchanged storage functions; registering them adds the
+  header `x-linked-auth-transport: body`, and only then does the server put the refresh token in the
+  body. Native clients keep passing it to `validateToken`/`signout`.
+- **Sign-out / failed refresh**: the server clears all three cookies (and a legacy `refreshToken`
+  on `/`). Sign-in and refresh clear a legacy `/` refresh cookie only when one was actually sent:
+  `req.cookies` keeps one of two same-named cookies, so the raw Cookie header is read — two
+  `refreshToken` values, or one without the `linkedAuthSession` hint (always set together with the
+  scoped cookie), means a legacy cookie is there. js-cookie is gone.
+- **Lost refresh responses** (found in browser validation): a refresh whose response never reaches
+  the browser (a navigation aborts it, or two tabs send the same cookie at once) leaves the browser
+  holding the replaced token. A replaced token presented within the 30 s grace window — while the
+  session is alive — now gets a FRESH refresh token in the same session (and its cookie), instead
+  of an access token only. Before, the browser kept the replaced token, its next refresh came after
+  the grace window and counted as reuse, revoking the whole session. Presenting a replaced token
+  after the grace window is still reuse.
+- Cookies are set through `request.res` / the provider's `response`; a call with no writable
+  response (SSR-local `Server.call` after headers were sent, tests) just skips them.
+
+Considered and not done: refreshing during SSR (would need the refresh cookie on `/`, sent with
+every request, plus rotation from the middleware). Instead an SSR page load past the access
+token's expiry renders anonymous and the client refreshes on mount (RequireAuth already shows its
+loading state while validating). An open tab keeps the access cookie fresh, so reloads during use
+render signed in.
+
+### Client
+
+`src/utils/authClient.ts` (no React): `setAccessToken` (memory + `Authorization` header +
+schedule), `scheduleRefreshAt(exp)` (for SSR, where only `exp` is known — from the rendered
+`auth.exp`), `refreshAccessToken` (single flight), `installVisibilityRefresh`
+(visibilitychange/focus when stale), `installServerCallRetry` (refresh before sending with an
+expired token; on 401 refresh once and retry once; auth's own `/call/@_linked/auth/` calls are
+never intercepted; a 401 within 10 s of a successful refresh does not trigger another refresh).
+A refresh that returns the same `exp` (nothing to rotate) is not rescheduled 60 s before it, so
+the scheduler cannot loop. `useAuth` registers the refresh (`validateToken` with
+`{forceRefresh: true}`), replaces the polling interval, and on `ENFORCE_SIGNIN` first tries one
+refresh before signing out. A refresh that gets no answer (server error) keeps the session.
+
+- The lead is 60 s, or half the token's lifetime (`exp - iat`) when that is shorter, at least 1 s —
+  a fixed 60 s lead on a 60 s token refreshed every 5 s.
+- A session that ends while a tab is open clears ALL client state (auth, user, userAccount,
+  validating, in-memory token, `Authorization` default, schedule). Clearing only `userAccount`
+  left `user` set, and an app's sign-in page that redirects when `user` is set bounced against
+  `RequireAuth` in a render loop.
+- `user`/`userAccount` keep their object identity across a refresh when the data is unchanged
+  (same id, same JSON), so effects keyed on `auth.user` do not re-run on every refresh.
+
+@_linked/server-utils 1.8 added `LincdServerProxy.setAuthHandler` (its `AuthHandler` type is
+imported here), and auth registers through it. Only when an app resolves an older server-utils
+does auth fall back to wrapping `LincdServerProxy.prototype.fetchWithRetry`. On the hook path the
+proxy resends with the current default headers, so `setAccessToken(null)` (sign-out, ended
+session) always removes the `Authorization` default. The hook as specified for server-utils:
+
+```ts
+interface ServerCallAuthHandler {
+  /** Before each fetch (may await a refresh). */
+  beforeRequest?(url: string, init: RequestInit): Promise<void> | void;
+  /** After a 401. Resolve true to retry ONCE, rebuilt from the current default headers. */
+  onUnauthorized?(url: string, response: Response): Promise<boolean> | boolean;
+}
+static setAuthHandler(handler: ServerCallAuthHandler | null): void;
+```
+
+called from `fetchBackend` around `fetchWithRetry` (and ideally `callCustomShapeMethod`, which
+uses bare `fetch` without default headers today). Not covered by the retry: `ENFORCE_SIGNIN`
+responses (HTTP 200 with `__action`) — handled by the refresh-then-sign-out action handler, but
+the call itself returns `undefined`.
+
+### Lifetimes
+
+| Var | development | otherwise |
+|---|---|---|
+| `AUTH_ACCESS_TOKEN_TTL` | 3600 | **900** (was 864000) |
+| `AUTH_REFRESH_TOKEN_TTL` | 2592000 | 5184000 (unchanged) |
+| `AUTH_SESSION_IDLE_TTL` | 604800 | 604800 (`0` = off) |
+| `AUTH_SESSION_MAX_TTL` | 5184000 | 5184000 (`0` = off) |
+
+Development keeps an hour so a paused debugger or a restarting dev server does not cost a
+sign-in and the refresh does not flood the dev log; it still exercises the scheduler. The refresh
+TTL stays as the upper bound; in practice the idle timeout (7 d) caps each refresh token sooner.
+
+### Session lifetime
+
+- New optional property `auth:sessionStartedAt` on `RefreshToken`, copied to every rotation.
+  Records from 2.0.x without it fall back to the earliest `createdAt` of their session (one
+  extra query, only for those records).
+- New refresh tokens expire at `min(now + refresh TTL, now + idle TTL, sessionStartedAt + max TTL)`.
+- A refresh also checks the limits explicitly (`lastUsedAt` for idle, session start for max), so
+  records issued before the limits existed or were lowered are caught; that revokes the session
+  (reasons `idle` / `session-expired`).
+- Idle is measured from the last refresh: with 15 min access tokens an open app refreshes every
+  ~14 min, so it approximates "last time the app was open".
+
+### Cleanup
+
+`cleanupExpiredSessions(store?, {olderThan, now})` (default `olderThan` 30 days or
+`AUTH_SESSION_CLEANUP_AFTER`) deletes records revoked or expired before the cutoff — recently
+revoked ones stay, because reuse detection needs them. Uses a new optional store method
+`findStale(cutoff)` (graph: two date-range queries). The provider's setup starts a background run
+5 min after startup and then daily, at most once per day per process (also across HMR re-setup),
+timer `unref`'d, errors logged; `AUTH_SESSION_CLEANUP=false` turns it off.
+
+### Contract changes (major)
+
+- Browsers no longer get `refreshToken` in response bodies; JS cannot read any auth cookie.
+  `getAccessToken()` returns the in-memory token (none right after an SSR page load until the
+  first refresh). Apps that read `document.cookie`/js-cookie for tokens must stop.
+- `validateToken(refreshToken?, {forceRefresh?})`; `AuthenticationResult.refreshToken` is optional.
+- `GraphRefreshSessionStore.create` now also persists `revokedAt`/`replacedBy` when given.
+
+### Tests
+
+Unit (`npm test`): `test/cookies.test.mjs` (real HTTP: flags, maxAge, body without refresh token,
+native body transport, SSR with only the access cookie, stale Bearer + valid cookie, cookie-only
+refresh/rotation, failed refresh clears, sign-out clears incl. legacy `/` cookie, Secure via trusted
+proxy / not via untrusted header / not on http, overrides, default TTLs per NODE_ENV),
+`test/session-lifetime.test.mjs` (idle, absolute, legacy start fallback, `0` = off, cleanup),
+`test/authClient.test.mjs` (scheduler timing, no reschedule loop, SSR schedule from exp, visibility,
+single flight, 401 → refresh → retry once, no loop, failed refresh not retried, concurrent 401s
+share one refresh, auth calls not intercepted, pre-send refresh, web memory-only storage, native
+storage + body-transport header). Against the 2.0.1 build: 22 of the 23 cookie/lifetime tests and
+the whole client file (module missing) fail; the native-body test passes on both, as it should.
+Integration (Fuseki): browser cookies + rotation + sign-out against the store, idle, absolute,
+legacy-start fallback via the graph, cleanup via the graph date queries — 5 new, all failing on
+2.0.1.
 
 ## Migration impact
 
@@ -136,8 +285,11 @@ this work.
 | `JWT_SECRET` | yes, outside development/test | dev: `'jwt-secret'` (warns) |
 | `SESSION_SECRET` | yes, outside development/test | dev: md5 of the module filename (warns) |
 | `SITE_ROOT` | yes (access-token audience) | — |
-| `AUTH_ACCESS_TOKEN_TTL` | no | dev 86400, otherwise 864000 (seconds) |
+| `AUTH_ACCESS_TOKEN_TTL` | no | dev 3600, otherwise 900 (seconds; 86400/864000 before step 3) |
 | `AUTH_REFRESH_TOKEN_TTL` | no | dev 2592000, otherwise 5184000 (seconds) |
+| `AUTH_SESSION_IDLE_TTL` / `AUTH_SESSION_MAX_TTL` | no | 604800 / 5184000 (`0` = off) |
+| `AUTH_SESSION_CLEANUP` / `AUTH_SESSION_CLEANUP_AFTER` | no | on / 2592000 |
+| `AUTH_COOKIE_SECURE` / `AUTH_COOKIE_SAMESITE` / `AUTH_COOKIE_DOMAIN` / `AUTH_REFRESH_COOKIE_PATH` | no | auto / per cookie / host / `/call/@_linked/auth` |
 
 ## Test plan
 

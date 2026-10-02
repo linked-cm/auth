@@ -54,7 +54,14 @@ function newApp() {
   return app;
 }
 
-function newProvider(request = { headers: {}, cookies: {} }) {
+/**
+ * These tests use the NATIVE token contract (refresh token in the response body), which is what
+ * a client that registered setAuthTokenStorageMethods asks for with this header. The browser
+ * contract (httpOnly cookies, no refresh token in the body) is tested in cookies.test.mjs.
+ */
+const BODY_TRANSPORT = { 'x-linked-auth-transport': 'body' };
+
+function newProvider(request = { headers: { ...BODY_TRANSPORT }, cookies: {} }) {
   const provider = new TestProvider(null, fakeLincdServer);
   provider.request = request;
   return provider;
@@ -62,7 +69,7 @@ function newProvider(request = { headers: {}, cookies: {} }) {
 
 function requestWith({ bearer, cookies = {} } = {}) {
   return {
-    headers: bearer ? { authorization: `Bearer ${bearer}` } : {},
+    headers: { ...BODY_TRANSPORT, ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) },
     cookies,
   };
 }
@@ -251,22 +258,33 @@ test('a rotated refresh token is rejected, and reusing it revokes the session', 
   assert.ok(afterReuse.error, 'the whole session is revoked after reuse');
 });
 
-test('reuse within the grace window (concurrent tabs) gives an access token but no refresh token', async () => {
+test('a lost refresh response does not kill the session: reuse within the grace window gets a fresh token', async () => {
   mock.timers.enable({ apis: ['Date'], now: Date.now() });
-  const first = await signin();
-  const second = await refresh(first.refreshToken);
-  assert.equal(second.error, undefined);
+  const a = await signin();
+  const b = await refresh(a.refreshToken); // A -> B
+  assert.equal(b.error, undefined);
+  const c = await refresh(b.refreshToken); // B -> C, but the response is lost
+  assert.equal(c.error, undefined);
 
   mock.timers.tick(5_000);
-  const otherTab = await refresh(first.refreshToken);
-  assert.equal(otherTab.error, undefined, 'the second tab is not signed out');
-  assert.ok(jwtUtils.verifyAccessToken(otherTab.accessToken));
-  assert.equal(otherTab.refreshToken, undefined, 'no second refresh token in the family');
-  assert.equal(otherTab.refreshTokenExpiresIn, undefined, 'and no expiry for a token not sent');
+  const retry = await refresh(b.refreshToken); // the client still holds B
+  assert.equal(retry.error, undefined, 'not signed out');
+  assert.ok(jwtUtils.verifyAccessToken(retry.accessToken));
+  assert.ok(retry.refreshToken, 'a fresh refresh token replaces the one the client lost');
+  assert.notEqual(retry.refreshToken, c.refreshToken);
+  assert.ok(retry.refreshTokenExpiresIn > 0);
 
-  // the session is intact
-  const third = await refresh(second.refreshToken);
-  assert.equal(third.error, undefined);
+  // 40 s later the client refreshes with what it holds now: the session is alive
+  mock.timers.tick(40_000);
+  const d = await refresh(retry.refreshToken);
+  assert.equal(d.error, undefined, `the fresh token works after the grace window: ${d.error}`);
+  const fromC = await refresh(c.refreshToken);
+  assert.equal(fromC.error, undefined, 'the lost token C is not revoked either');
+
+  // presenting B after the grace window is still reuse, and ends the session
+  const late = await refresh(b.refreshToken);
+  assert.ok(late.error, 'reuse after the grace window is refused');
+  assert.ok((await refresh(d.refreshToken)).error, 'and revokes the session');
 });
 
 test('an expired refresh token is refused', async () => {
@@ -435,9 +453,12 @@ function assertExpiryFields(result, refreshToken, label) {
 test('sign-in returns when the refresh token expires', async () => {
   const result = await signin();
   assertExpiryFields(result, result.refreshToken, 'sign-in');
+  // the earliest of the refresh lifetime, the idle timeout and the absolute session lifetime
+  const { refreshTtl, idleTtl, maxTtl } = sessions.getSessionLimits();
+  const expected = Math.min(refreshTtl, idleTtl || Infinity, maxTtl || Infinity);
   assert.ok(
-    Math.abs(result.refreshTokenExpiresIn - tokenUtils.REFRESH_TOKEN_EXPIRES) <= 2,
-    'the full refresh lifetime'
+    Math.abs(result.refreshTokenExpiresIn - expected) <= 2,
+    `the refresh lifetime capped by the session limits (${result.refreshTokenExpiresIn} ~ ${expected})`
   );
 });
 
