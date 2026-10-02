@@ -2,6 +2,7 @@ import { JwtPayload } from 'jsonwebtoken';
 import { Person as SchemaPerson } from '@_linked/schema/shapes/Person';
 import { UserAccount } from '@_linked/sioc/shapes/UserAccount';
 import { QResult } from '@_linked/core/queries/SelectQuery';
+import type { RefreshTokenExpiry } from '../utils/token.js';
 
 /**
  * The payload of the auth token use on backend.
@@ -12,11 +13,11 @@ export interface AuthSessionPayload extends JwtPayload, AuthSession {}
  * The result of a successful authentication use on backend.
  */
 export type AuthenticationResult =
-  | {
+  | ({
       auth: AuthSession;
       accessToken: string;
       refreshToken: string;
-    }
+    } & RefreshTokenExpiry)
   | {
       error: string;
       action?: string;
@@ -44,7 +45,7 @@ export type AuthenticationResponse = {
   auth: AuthSession;
   accessToken: string;
   refreshToken: string;
-};
+} & RefreshTokenExpiry;
 
 export type UserData = QResult<
   SchemaPerson,

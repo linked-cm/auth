@@ -262,6 +262,7 @@ test('reuse within the grace window (concurrent tabs) gives an access token but 
   assert.equal(otherTab.error, undefined, 'the second tab is not signed out');
   assert.ok(jwtUtils.verifyAccessToken(otherTab.accessToken));
   assert.equal(otherTab.refreshToken, undefined, 'no second refresh token in the family');
+  assert.equal(otherTab.refreshTokenExpiresIn, undefined, 'and no expiry for a token not sent');
 
   // the session is intact
   const third = await refresh(second.refreshToken);
@@ -375,17 +376,26 @@ async function setupWithEnv(env) {
   }
 }
 
-test('startup throws in production when JWT_SECRET is missing', async () => {
+test('startup throws a fatal error in production when JWT_SECRET is missing', async () => {
   await assert.rejects(
     setupWithEnv({ NODE_ENV: 'production', JWT_SECRET: undefined }),
-    /JWT_SECRET/
+    (err) => {
+      assert.match(err.message, /JWT_SECRET/);
+      // @_linked/server aborts startup on `fatal: true` instead of serving with broken auth
+      assert.equal(err.fatal, true, 'the error is marked fatal');
+      return true;
+    }
   );
 });
 
-test('startup throws in production when SESSION_SECRET is missing', async () => {
+test('startup throws a fatal error in production when SESSION_SECRET is missing', async () => {
   await assert.rejects(
     setupWithEnv({ NODE_ENV: 'production', SESSION_SECRET: undefined }),
-    /SESSION_SECRET/
+    (err) => {
+      assert.match(err.message, /SESSION_SECRET/);
+      assert.equal(err.fatal, true, 'the error is marked fatal');
+      return true;
+    }
   );
 });
 
@@ -399,4 +409,162 @@ test('development keeps working without secrets', async () => {
     JWT_SECRET: undefined,
     SESSION_SECRET: undefined,
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Refresh token expiry: the server tells the client how long its record lives
+// ---------------------------------------------------------------------------------------------
+const tokenUtils = await import(new URL('utils/token.js', libDir));
+
+function storedExpiry(refreshToken) {
+  const record = memoryStore.records.get(sessions.hashRefreshToken(refreshToken));
+  assert.ok(record, 'the refresh token is stored');
+  return record.expiresAt;
+}
+
+function assertExpiryFields(result, refreshToken, label) {
+  const expiresAt = storedExpiry(refreshToken);
+  assert.equal(result.refreshTokenExpiresAt, expiresAt.toISOString(), `${label}: expiresAt`);
+  const expectedIn = Math.floor((expiresAt.getTime() - Date.now()) / 1000);
+  assert.ok(
+    Math.abs(result.refreshTokenExpiresIn - expectedIn) <= 2,
+    `${label}: expiresIn ${result.refreshTokenExpiresIn} ~ ${expectedIn}`
+  );
+}
+
+test('sign-in returns when the refresh token expires', async () => {
+  const result = await signin();
+  assertExpiryFields(result, result.refreshToken, 'sign-in');
+  assert.ok(
+    Math.abs(result.refreshTokenExpiresIn - tokenUtils.REFRESH_TOKEN_EXPIRES) <= 2,
+    'the full refresh lifetime'
+  );
+});
+
+test('a refresh returns the expiry of the new refresh token', async () => {
+  const first = await signin();
+  const result = await refresh(first.refreshToken);
+  assert.equal(result.error, undefined);
+  assertExpiryFields(result, result.refreshToken, 'refresh');
+});
+
+test('validateToken with a valid access token returns the expiry of the echoed refresh token', async () => {
+  mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const first = await signin();
+  mock.timers.tick(60_000);
+  const result = await newProvider(requestWith({ bearer: first.accessToken })).validateToken(
+    first.refreshToken
+  );
+  assert.equal(result.error, undefined);
+  assert.equal(result.refreshToken, first.refreshToken);
+  assertExpiryFields(result, first.refreshToken, 'validate');
+  assert.ok(result.refreshTokenExpiresIn <= first.refreshTokenExpiresIn - 59, 'counts down');
+});
+
+test('validateToken does not vouch for an unknown refresh token', async () => {
+  const first = await signin();
+  const result = await newProvider(requestWith({ bearer: first.accessToken })).validateToken(
+    legacyToken('refresh')
+  );
+  assert.equal(result.error, undefined);
+  assert.equal(result.refreshTokenExpiresIn, undefined);
+  assert.equal(result.refreshTokenExpiresAt, undefined);
+});
+
+/** Token storage that records what the client would write. */
+function memoryTokenStorage() {
+  const values = new Map();
+  const writes = [];
+  tokenUtils.setAuthTokenStorageMethods(
+    async (key) => values.get(key),
+    async (key, value, expires) => {
+      values.set(key, value);
+      writes.push({ key, value, expires });
+    },
+    async (key) => values.delete(key)
+  );
+  return { values, writes };
+}
+
+test('client: cookie lifetimes come from the server (access: JWT exp, refresh: returned expiry)', async () => {
+  const { writes } = memoryTokenStorage();
+  const accessToken = jwt.sign({ typ: 'access' }, SECRET, { expiresIn: 600 });
+  await tokenUtils.storeAuthTokens({
+    accessToken,
+    refreshToken: 'opaque-refresh',
+    refreshTokenExpiresIn: 3600,
+    refreshTokenExpiresAt: new Date(Date.now() + 3600_000).toISOString(),
+  });
+  const access = writes.find((w) => w.key === tokenUtils.ACCESS_TOKEN);
+  const refreshWrite = writes.find((w) => w.key === tokenUtils.REFRESH_TOKEN);
+  assert.ok(access.expires >= 598 && access.expires <= 600, `access ${access.expires}`);
+  assert.equal(refreshWrite.expires, 3600, 'refresh cookie lives as long as the server record');
+});
+
+test('client: refreshTokenExpiresAt alone sizes the refresh cookie', async () => {
+  const { writes } = memoryTokenStorage();
+  await tokenUtils.storeAuthTokens({
+    refreshToken: 'opaque-refresh',
+    refreshTokenExpiresAt: new Date(Date.now() + 7200_000).toISOString(),
+  });
+  const w = writes.find((x) => x.key === tokenUtils.REFRESH_TOKEN);
+  assert.ok(w.expires >= 7198 && w.expires <= 7200, `refresh ${w.expires}`);
+});
+
+test('client: an older server (no expiry) gets the defaults, and an unchanged refresh token is not extended', async () => {
+  const { values, writes } = memoryTokenStorage();
+  await tokenUtils.storeAuthTokens({ refreshToken: 'first' });
+  assert.deepEqual(writes, [
+    { key: tokenUtils.REFRESH_TOKEN, value: 'first', expires: tokenUtils.REFRESH_TOKEN_EXPIRES },
+  ]);
+  await tokenUtils.storeAuthTokens({ refreshToken: 'first' });
+  assert.equal(writes.length, 1, 'the same token echoed back is left alone');
+  assert.equal(values.get(tokenUtils.REFRESH_TOKEN), 'first');
+});
+
+test('the server-provided expiry reaches the client end to end', async () => {
+  const { writes } = memoryTokenStorage();
+  const result = await signin();
+  await tokenUtils.storeAuthTokens(result);
+  const w = writes.find((x) => x.key === tokenUtils.REFRESH_TOKEN);
+  assert.ok(Math.abs(w.expires - result.refreshTokenExpiresIn) <= 1);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Logging of rejected access tokens
+// ---------------------------------------------------------------------------------------------
+test('an opaque refresh token presented as an access token is not logged', async () => {
+  const { refreshToken } = await signin();
+  const warn = mock.method(console, 'warn', () => {});
+  try {
+    assert.equal(jwtUtils.verifyAccessToken(refreshToken), false);
+    assert.equal(await whoami({ bearer: refreshToken }), null);
+    assert.equal(warn.mock.callCount(), 0, 'no log line for a non-JWT');
+  } finally {
+    warn.mock.restore();
+  }
+});
+
+test('a suspicious token (bad signature) is logged once, not on every request', async () => {
+  const forged = jwt.sign({ ...PAYLOAD, typ: 'access' }, 'not-the-secret', {
+    audience: SITE_ROOT,
+    expiresIn: 600,
+  });
+  const notAccess = jwt.sign({ ...PAYLOAD, typ: 'other' }, SECRET, {
+    audience: SITE_ROOT,
+    expiresIn: 600,
+  });
+  const warn = mock.method(console, 'warn', () => {});
+  try {
+    for (let i = 0; i < 3; i++) {
+      assert.equal(jwtUtils.verifyAccessToken(forged), false);
+      assert.equal(jwtUtils.verifyAccessToken(notAccess), false);
+    }
+    const lines = warn.mock.calls.map((c) => String(c.arguments[0]));
+    assert.equal(lines.length, 2, lines.join('\n'));
+    assert.match(lines[0], /invalid signature/);
+    assert.match(lines[1], /not an access token/);
+  } finally {
+    warn.mock.restore();
+  }
 });

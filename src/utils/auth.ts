@@ -11,6 +11,9 @@ import type {
   UserData,
 } from '../types/auth.js';
 import { createAccessToken, createToken } from './jwt.js';
+import { findRefreshTokenExpiry } from './sessions.js';
+import { refreshTokenExpiryFields } from './token.js';
+import type { RefreshTokenExpiry } from './token.js';
 import { QResult } from '@_linked/core/queries/SelectQuery';
 import { BackendProvider } from '@_linked/server-utils/utils/BackendProvider.js';
 import { setQueryContext } from '@_linked/core/queries/QueryContext';
@@ -103,9 +106,8 @@ export class Auth {
       );
 
       // create the access token and a stored refresh token (a new session)
-      const { accessToken, refreshToken, sessionId } = await createToken(
-        authentication
-      );
+      const { accessToken, refreshToken, sessionId, refreshTokenExpiresAt } =
+        await createToken(authentication);
 
       // set authentication to the request, remembering the session for updateSessionData
       Auth.setAuthentication(request, { ...authentication, sid: sessionId });
@@ -114,6 +116,8 @@ export class Auth {
         auth: authentication,
         accessToken,
         refreshToken,
+        // the client sizes the refresh cookie from this (the server's TTL is not visible there)
+        ...refreshTokenExpiryFields(refreshTokenExpiresAt),
       } as AuthenticationResult;
     } catch (err) {
       console.error('Failed to create token', err);
@@ -162,11 +166,13 @@ export class Auth {
   ): AuthSession {
     const updateSessionData = async (
       updatedData: AuthSession
-    ): Promise<{
-      auth: AuthSession;
-      accessToken: string;
-      refreshToken: string;
-    }> => {
+    ): Promise<
+      {
+        auth: AuthSession;
+        accessToken: string;
+        refreshToken: string;
+      } & RefreshTokenExpiry
+    > => {
       // create completely new user and userAccount objects to avoid reference issues
       const updatedUser = {
         ...request.linkedAuth.user,
@@ -204,6 +210,7 @@ export class Auth {
       // update. A token from before sessions existed has no `sid`: start a session for it.
       let accessToken: string;
       let refreshToken: string;
+      let refreshTokenExpiresAt: Date | undefined;
       if (currentSessionId) {
         accessToken = await createAccessToken(
           newAuthSession,
@@ -211,11 +218,13 @@ export class Auth {
           currentSessionId
         );
         refreshToken = (request as any).cookies?.refreshToken;
+        if (refreshToken) {
+          refreshTokenExpiresAt = await findRefreshTokenExpiry(refreshToken);
+        }
       } else {
         let sessionId: string;
-        ({ accessToken, refreshToken, sessionId } = await createToken(
-          newAuthSession
-        ));
+        ({ accessToken, refreshToken, sessionId, refreshTokenExpiresAt } =
+          await createToken(newAuthSession));
         newAuthSession.sid = sessionId;
       }
 
@@ -226,6 +235,7 @@ export class Auth {
         },
         accessToken,
         refreshToken,
+        ...refreshTokenExpiryFields(refreshTokenExpiresAt),
       };
     };
 

@@ -233,6 +233,8 @@ export type RotateResult =
       sessionId: string;
       /** The replacement token. Absent on a grace-window reuse: the caller keeps the token it has. */
       refreshToken?: string;
+      /** When the replacement token expires (absent with it). */
+      refreshTokenExpiresAt?: Date;
     }
   | {
       ok: false;
@@ -338,6 +340,7 @@ async function doRotate(tokenHash: string, now: Date): Promise<RotateResult> {
     accountId: record.accountId,
     sessionId: record.sessionId,
     refreshToken: next.refreshToken,
+    refreshTokenExpiresAt: next.expiresAt,
   };
 }
 
@@ -348,6 +351,19 @@ export async function findSessionIdForRefreshToken(
   if (!looksLikeOpaqueRefreshToken(rawToken)) return undefined;
   const record = await store.findByTokenHash(hashRefreshToken(rawToken));
   return record?.sessionId;
+}
+
+/**
+ * When a raw refresh token expires, if it is known and still usable (not revoked, not expired).
+ * Lets the server tell the client how long to keep a refresh token it echoes back.
+ */
+export async function findRefreshTokenExpiry(
+  rawToken: string,
+  now: Date = new Date()
+): Promise<Date | undefined> {
+  if (!looksLikeOpaqueRefreshToken(rawToken)) return undefined;
+  const record = await store.findByTokenHash(hashRefreshToken(rawToken));
+  return record && isActive(record, now) ? record.expiresAt : undefined;
 }
 
 /** Revoke every token of one session (sign-out, or detected reuse). Returns how many were revoked. */

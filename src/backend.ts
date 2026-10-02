@@ -25,12 +25,14 @@ import {
 } from './utils/jwt.js';
 import {
   deleteAllSessionsForAccount,
+  findRefreshTokenExpiry,
   findSessionIdForRefreshToken,
   revokeAllSessionsForAccount,
   revokeSession,
   rotateRefreshToken,
 } from './utils/sessions.js';
 import { assertAuthSecrets } from './utils/secrets.js';
+import { refreshTokenExpiryFields } from './utils/token.js';
 import {
   emitAccountWillBeRemovedEvent,
   onAccountWillBeRemoved,
@@ -75,6 +77,9 @@ export default class AuthBackendProvider extends BackendProvider {
 
   async setupBeforeControllers() {
     // Fail at startup, not on the first sign-in, when a production deployment lacks its secrets.
+    // This is the first thing the package runs at boot. The error is a FatalConfigError
+    // (`fatal: true`), which @_linked/server re-throws to abort startup instead of logging the
+    // failed hook and serving with broken auth.
     const { jwtSecret, sessionSecret } = assertAuthSecrets(filename__);
 
     //if defined, take the values from the environment variables to define the shapes for the account and user
@@ -1095,10 +1100,16 @@ export default class AuthBackendProvider extends BackendProvider {
       const payload = token ? verifyAccessToken(token) : false;
       if (payload) {
         const authentication = Auth.setAuthentication(request, payload);
+        // The client stores the echoed refresh token again: tell it how long the server will
+        // honour it, so the cookie does not outlive the record.
+        const refreshTokenExpiresAt = refreshToken
+          ? await findRefreshTokenExpiry(refreshToken)
+          : undefined;
         return {
           auth: authentication,
           accessToken: token,
           refreshToken,
+          ...refreshTokenExpiryFields(refreshTokenExpiresAt),
         };
       }
 
@@ -1158,6 +1169,7 @@ export default class AuthBackendProvider extends BackendProvider {
       accessToken,
       // absent on a concurrent-tab refresh: the client keeps the refresh token it has
       refreshToken: rotation.refreshToken,
+      ...refreshTokenExpiryFields(rotation.refreshTokenExpiresAt),
     };
   }
 

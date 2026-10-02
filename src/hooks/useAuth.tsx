@@ -10,11 +10,11 @@ import {
   ACCESS_TOKEN,
   ACCESS_TOKEN_EXPIRES,
   REFRESH_TOKEN,
-  REFRESH_TOKEN_EXPIRES,
   getAuthToken,
   removeAuthToken,
-  setAuthToken,
+  storeAuthTokens,
 } from '../utils/token.js';
+import type { RefreshTokenExpiry } from '../utils/token.js';
 import { useAppContext } from '@_linked/server-utils/components/AppContext';
 import type {
   OAuthProvider,
@@ -26,28 +26,6 @@ import type { UserData, UserAccountData } from '../types/auth.js';
 import { useNavigate } from 'react-router-dom';
 
 export const ENFORCE_SIGNED_IN = 'ENFORCE_SIGNIN';
-
-/**
- * Seconds until a JWT's `exp`, read without verifying it (the server verifies; this only sizes
- * the cookie). Undefined when the token cannot be read.
- */
-function secondsUntilExpiry(jwt: string): number | undefined {
-  try {
-    const part = jwt.split('.')[1];
-    if (!part) return undefined;
-    const base64 = part.replace(/-/g, '+').replace(/_/g, '/');
-    const json =
-      typeof atob === 'function'
-        ? atob(base64)
-        : Buffer.from(base64, 'base64').toString('utf8');
-    const exp = JSON.parse(json)?.exp;
-    if (typeof exp !== 'number') return undefined;
-    const seconds = Math.floor(exp - Date.now() / 1000);
-    return seconds > 0 ? seconds : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 const AuthContext = createContext(null);
 
@@ -91,7 +69,7 @@ export const useAuth = <
     auth?: AuthSession<UserType, AccountType>;
     accessToken?: string;
     refreshToken?: string;
-  }) => AuthenticationResponse;
+  } & RefreshTokenExpiry) => AuthenticationResponse;
   signinWithPassword: (
     email: string,
     password: string
@@ -158,6 +136,8 @@ function useProvideAuth(signinRoute: string = '') {
         auth,
         accessToken: newAccessToken,
         refreshToken: newRefreshToken,
+        refreshTokenExpiresIn: requestObject.linkedAuth.refreshTokenExpiresIn,
+        refreshTokenExpiresAt: requestObject.linkedAuth.refreshTokenExpiresAt,
       });
     }
   }, [
@@ -221,10 +201,15 @@ function useProvideAuth(signinRoute: string = '') {
     auth,
     accessToken,
     refreshToken,
+    refreshTokenExpiresIn,
+    refreshTokenExpiresAt,
   }: {
     auth: AuthSession;
     accessToken: string;
     refreshToken: string;
+    // when the server says the refresh token expires (absent from older servers)
+    refreshTokenExpiresIn?: number;
+    refreshTokenExpiresAt?: string;
     // TODO: which better use QResult or Shape?
     // user: QResult<Person>;
     // userAccount: QResult<UserAccount>;
@@ -236,26 +221,18 @@ function useProvideAuth(signinRoute: string = '') {
     setUser(auth.user);
     setUserAccount(auth.userAccount);
 
-    // save token to storage only if provided
-    if (accessToken) {
-      setAuthToken({
-        key: ACCESS_TOKEN,
-        value: accessToken,
-        // keep the cookie exactly as long as the token is valid (the server may be configured
-        // with a different lifetime than the client's defaults)
-        expires: secondsUntilExpiry(accessToken) ?? ACCESS_TOKEN_EXPIRES,
-      });
+    // save tokens to storage only if provided: the access cookie lives until the token's exp,
+    // the refresh cookie until the expiry the server returned (see storeAuthTokens)
+    storeAuthTokens({
+      accessToken,
+      refreshToken,
+      refreshTokenExpiresIn,
+      refreshTokenExpiresAt,
+    }).catch((err) => console.warn('@_linked/auth: could not store tokens', err));
 
+    if (accessToken) {
       Server.addDefaultHeaders({
         Authorization: `Bearer ${accessToken}`,
-      });
-    }
-
-    if (refreshToken) {
-      setAuthToken({
-        key: REFRESH_TOKEN,
-        value: refreshToken,
-        expires: REFRESH_TOKEN_EXPIRES,
       });
     }
 
@@ -265,6 +242,8 @@ function useProvideAuth(signinRoute: string = '') {
       auth: auth,
       accessToken: accessToken || '',
       refreshToken: refreshToken || '',
+      ...(refreshTokenExpiresIn !== undefined ? { refreshTokenExpiresIn } : {}),
+      ...(refreshTokenExpiresAt !== undefined ? { refreshTokenExpiresAt } : {}),
     };
   };
 
@@ -281,6 +260,8 @@ function useProvideAuth(signinRoute: string = '') {
           auth: response.auth,
           accessToken: response.accessToken,
           refreshToken: response.refreshToken,
+          refreshTokenExpiresIn: response.refreshTokenExpiresIn,
+          refreshTokenExpiresAt: response.refreshTokenExpiresAt,
         });
         return;
       }
@@ -301,6 +282,8 @@ function useProvideAuth(signinRoute: string = '') {
             auth: response.auth,
             accessToken: response.accessToken,
             refreshToken: response.refreshToken,
+            refreshTokenExpiresIn: response.refreshTokenExpiresIn,
+            refreshTokenExpiresAt: response.refreshTokenExpiresAt,
           });
         } else {
           //TODO: show user feedback
@@ -331,6 +314,8 @@ function useProvideAuth(signinRoute: string = '') {
           auth: response.auth,
           accessToken: response.accessToken,
           refreshToken: response.refreshToken,
+          refreshTokenExpiresIn: response.refreshTokenExpiresIn,
+          refreshTokenExpiresAt: response.refreshTokenExpiresAt,
         });
       }
       throw new Error(response?.error || "Couldn't sign in (dev)");
@@ -351,6 +336,8 @@ function useProvideAuth(signinRoute: string = '') {
           auth: response.auth,
           accessToken: response.accessToken,
           refreshToken: response.refreshToken,
+          refreshTokenExpiresIn: response.refreshTokenExpiresIn,
+          refreshTokenExpiresAt: response.refreshTokenExpiresAt,
         });
       } else {
         //TODO: show user feedback
@@ -366,6 +353,8 @@ function useProvideAuth(signinRoute: string = '') {
           auth: response.auth,
           accessToken: response.accessToken,
           refreshToken: response.refreshToken,
+          refreshTokenExpiresIn: response.refreshTokenExpiresIn,
+          refreshTokenExpiresAt: response.refreshTokenExpiresAt,
         });
       } else {
         //TODO: show user feedback
@@ -431,6 +420,8 @@ function useProvideAuth(signinRoute: string = '') {
             auth: response.auth,
             accessToken: response.accessToken,
             refreshToken: response.refreshToken,
+            refreshTokenExpiresIn: response.refreshTokenExpiresIn,
+            refreshTokenExpiresAt: response.refreshTokenExpiresAt,
           });
         })
         .catch((err) => {
