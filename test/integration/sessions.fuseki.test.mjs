@@ -151,7 +151,7 @@ test('the store holds a hash with dated metadata, never the raw token', async ()
   assert.equal(signin.error, undefined, signin.error);
   const hash = crypto.createHash('sha256').update(signin.refreshToken).digest('base64url');
   const rows = await sparql(`
-    PREFIX auth: <http://lincd.org/ont/auth/>
+    PREFIX auth: <https://linked.cm/ont/auth/>
     SELECT ?p ?o WHERE {
       { GRAPH ?g { ?s auth:tokenHash "${hash}" ; ?p ?o } }
       UNION { ?s auth:tokenHash "${hash}" ; ?p ?o }
@@ -205,7 +205,7 @@ test('removeAccount deletes the account\'s refresh token records', async () => {
   const countFor = async () =>
     (
       await sparql(`
-        PREFIX auth: <http://lincd.org/ont/auth/>
+        PREFIX auth: <https://linked.cm/ont/auth/>
         SELECT ?s WHERE { { ?s auth:account <${accountId}> } UNION { GRAPH ?g { ?s auth:account <${accountId}> } } }`)
     ).length;
   assert.ok((await countFor()) > 0, 'records exist before removal');
@@ -214,4 +214,16 @@ test('removeAccount deletes the account\'s refresh token records', async () => {
   assert.equal(await p.removeAccount(), true);
   assert.equal(await countFor(), 0, 'no records left for the removed account');
   assert.ok((await refresh(signin)).error, 'refresh fails for a removed account');
+});
+
+test('the RefreshToken shape refuses a record without its required fields', async () => {
+  const { RefreshToken } = await import(new URL('shapes/RefreshToken.js', libDir));
+  await assert.rejects(
+    async () => RefreshToken.create({ sessionId: 'incomplete', createdAt: new Date() }),
+    /tokenHash/
+  );
+  const rows = await sparql(`
+    PREFIX auth: <https://linked.cm/ont/auth/>
+    SELECT ?s WHERE { { ?s auth:sessionId "incomplete" } UNION { GRAPH ?g { ?s auth:sessionId "incomplete" } } }`);
+  assert.equal(rows.length, 0, 'nothing was stored');
 });

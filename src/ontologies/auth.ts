@@ -11,9 +11,17 @@ export var loadData = () => {
 };
 
 /**
- * The namespace of this ontology, which can be used to create NamedNodes with URI's not listed in this file
+ * The namespace of this ontology, which can be used to create NamedNodes with URI's not listed in this file.
+ *
+ * First-party ontologies live on linked.cm: `https://linked.cm/ont/{ontologySlug}/`, and a
+ * package's own ontology takes the package's publicSlug (`@_linked/auth` → `auth`), the same slug
+ * its shapes use under `https://linked.cm/shape/auth/`.
+ *
+ * Until 2.0 this was `http://lincd.org/ont/auth/`. Data stored under that namespace is invisible
+ * to this release until it is rewritten — see `migrateAuthNamespace` in
+ * `@_linked/auth/utils/migrateNamespace`.
  */
-export var ns = createNameSpace('http://lincd.org/ont/auth/');
+export var ns = createNameSpace('https://linked.cm/ont/auth/');
 
 /**
  * The NamedNode of the ontology itself
