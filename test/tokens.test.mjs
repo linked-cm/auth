@@ -54,7 +54,14 @@ function newApp() {
   return app;
 }
 
-function newProvider(request = { headers: {}, cookies: {} }) {
+/**
+ * These tests use the NATIVE token contract (refresh token in the response body), which is what
+ * a client that registered setAuthTokenStorageMethods asks for with this header. The browser
+ * contract (httpOnly cookies, no refresh token in the body) is tested in cookies.test.mjs.
+ */
+const BODY_TRANSPORT = { 'x-linked-auth-transport': 'body' };
+
+function newProvider(request = { headers: { ...BODY_TRANSPORT }, cookies: {} }) {
   const provider = new TestProvider(null, fakeLincdServer);
   provider.request = request;
   return provider;
@@ -62,7 +69,7 @@ function newProvider(request = { headers: {}, cookies: {} }) {
 
 function requestWith({ bearer, cookies = {} } = {}) {
   return {
-    headers: bearer ? { authorization: `Bearer ${bearer}` } : {},
+    headers: { ...BODY_TRANSPORT, ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) },
     cookies,
   };
 }
@@ -435,9 +442,12 @@ function assertExpiryFields(result, refreshToken, label) {
 test('sign-in returns when the refresh token expires', async () => {
   const result = await signin();
   assertExpiryFields(result, result.refreshToken, 'sign-in');
+  // the earliest of the refresh lifetime, the idle timeout and the absolute session lifetime
+  const { refreshTtl, idleTtl, maxTtl } = sessions.getSessionLimits();
+  const expected = Math.min(refreshTtl, idleTtl || Infinity, maxTtl || Infinity);
   assert.ok(
-    Math.abs(result.refreshTokenExpiresIn - tokenUtils.REFRESH_TOKEN_EXPIRES) <= 2,
-    'the full refresh lifetime'
+    Math.abs(result.refreshTokenExpiresIn - expected) <= 2,
+    `the refresh lifetime capped by the session limits (${result.refreshTokenExpiresIn} ~ ${expected})`
   );
 });
 

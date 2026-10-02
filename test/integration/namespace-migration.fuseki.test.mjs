@@ -59,7 +59,9 @@ async function sparql(query) {
   return (await res.json()).results.bindings;
 }
 
+// The native token contract (refresh token in the response body); browsers get it as a cookie.
 function provider(request = { headers: {}, cookies: {} }) {
+  request.headers = { 'x-linked-auth-transport': 'body', ...request.headers };
   const p = new AuthBackendProvider(null, { callGenericBackendProvidersMethod: async () => {} });
   p.request = request;
   return p;

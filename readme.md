@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Auth package facilitates authentication in your application using JSON Web Tokens (JWT). It employs `express-jwt` for stateless authentication, handling `accessToken` and `refreshToken` for web applications via Cookies and mobile applications using `@capacitor/preferences.`
+The Auth package facilitates authentication in your application using JSON Web Tokens (JWT). It employs `express-jwt` for stateless authentication. In browsers the **server** sets the tokens as httpOnly cookies; native apps (Capacitor) register their own storage with `setAuthTokenStorageMethods`.
 
 Signing in returns two tokens:
 
@@ -11,7 +11,27 @@ Signing in returns two tokens:
 
 A refresh token is never accepted as an access token. Apps that verify tokens themselves should use `verifyAccessToken` from `@_linked/auth/utils/jwt` instead of `jwt.verify`.
 
-Default lifetimes: in development the access token lasts 24 hours and the refresh token 30 days; otherwise 10 days and 60 days. The refresh lifetime is sliding (every refresh starts it again).
+Default lifetimes: the access token lasts **15 minutes** (1 hour in development) and the client refreshes it about a minute before it expires. A session ends after **7 days without a refresh** (idle timeout) and at the latest **60 days after sign-in** (absolute lifetime). Each refresh token expires at the earliest of `AUTH_REFRESH_TOKEN_TTL` (60 days, 30 in development), the idle timeout and the absolute lifetime.
+
+### How tokens travel (browsers)
+
+| Cookie (set by the server) | httpOnly | SameSite | Path | Lifetime |
+|---|---|---|---|---|
+| `accessToken` | yes | Lax | `/` | until the token's `exp` |
+| `refreshToken` | yes | Strict | `/call/@_linked/auth` | until the stored record's expiry |
+| `linkedAuthSession` (`1`, no secret) | no | Lax | `/` | as the refresh token |
+
+- The access cookie authenticates full page loads (server-side rendering sets `request.linkedAuth` from it). The client also keeps the access token from the response body **in memory** and sends it as the `Authorization` header with `Server.call`.
+- The refresh token is only sent to this package's endpoints and never appears in a response body a browser can read. `validateToken` reads it from the cookie and sets new cookies.
+- `linkedAuthSession` lets the client know a session exists without exposing it, so anonymous page loads skip the refresh round trip.
+- Signing out (and a failed refresh) clears all three.
+- `Secure` is set when the request is https (`req.secure`) or `SITE_ROOT` is https. **Behind a TLS-terminating proxy, set `app.set('trust proxy', …)`** so `req.secure` (and `req.ip`) reflect the client connection.
+
+The client refreshes ~60 s before the access token's `exp`, again when the tab becomes visible or focused with a stale token, and once after a `Server.call` gets a 401 (then retries that call once). Concurrent refreshes share one request.
+
+### Native apps
+
+Call `setAuthTokenStorageMethods(get, set, remove)` (from `@_linked/auth/utils/token`) before rendering `ProvideAuth`. The client then sends `x-linked-auth-transport: body`, the server returns the refresh token in the response body, and both tokens are stored through your functions (`expires` in seconds). Other non-browser clients (scripts, tests) can send that header too.
 
 ## Upgrading from 1.x: migrate stored auth data
 
@@ -70,8 +90,18 @@ import { PaidAccountTier1 } from 'lincd-dating/lib/shapes/PaidAccountTier1';
 | `JWT_SECRET` | yes (outside development/test) | signs access tokens — `openssl rand -base64 48` |
 | `SESSION_SECRET` | yes (outside development/test) | signs the session cookie — `openssl rand -base64 48` |
 | `SITE_ROOT` | yes | the access token audience |
-| `AUTH_ACCESS_TOKEN_TTL` | no | access token lifetime in seconds |
-| `AUTH_REFRESH_TOKEN_TTL` | no | refresh token lifetime in seconds |
+| `AUTH_ACCESS_TOKEN_TTL` | no | access token lifetime in seconds (default 900; development 3600) |
+| `AUTH_REFRESH_TOKEN_TTL` | no | refresh token lifetime in seconds (default 60 days; development 30) |
+| `AUTH_SESSION_IDLE_TTL` | no | a session not refreshed for this long ends (default 7 days; `0` = off) |
+| `AUTH_SESSION_MAX_TTL` | no | a session ends this long after sign-in (default 60 days; `0` = off) |
+| `AUTH_SESSION_CLEANUP` | no | `false` stops the daily background cleanup of old `RefreshToken` records |
+| `AUTH_SESSION_CLEANUP_AFTER` | no | how long revoked/expired records are kept before cleanup deletes them (default 30 days) |
+| `AUTH_COOKIE_SECURE` | no | `true`/`false` overrides the https detection |
+| `AUTH_COOKIE_SAMESITE` | no | `lax`/`strict`/`none` for both token cookies (`none` forces Secure; for a frontend on another site) |
+| `AUTH_COOKIE_DOMAIN` | no | cookie domain (default: the host) |
+| `AUTH_REFRESH_COOKIE_PATH` | no | path of the refresh cookie (default `/call/@_linked/auth`; prefix it when the app is served under a path) |
+
+Old refresh token records are deleted by `cleanupExpiredSessions(store?, {olderThan})` from `@_linked/auth/utils/sessions`. The backend provider runs it in the background a few minutes after startup and then at most once a day per process; turn that off with `AUTH_SESSION_CLEANUP=false` when a separate job does it.
 
 ## How to use on Frontend
 
@@ -99,7 +129,7 @@ const userAccount = auth.userAccount;
 
 ### Sign out
 
-Signing out removes the tokens from cookies/storage and revokes the session on the server, so its refresh token can no longer be used. (The access token itself stays valid until it expires.)
+Signing out revokes the session on the server, which also clears the auth cookies (native apps: the tokens are removed from storage), so its refresh token can no longer be used. (The access token itself stays valid until it expires — at most 15 minutes by default.)
 
 ```tsx
 import {useAuth} from 'lincd-auth/lib/hooks/useAuth';

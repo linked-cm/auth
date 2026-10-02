@@ -13,10 +13,23 @@
  *
  * Signing out revokes the session; a password reset revokes every session of the account; removing
  * the account deletes its records.
+ *
+ * Session lifetime: a session ends when it has not been refreshed for `AUTH_SESSION_IDLE_TTL`
+ * (idle timeout, sliding on every refresh) and at the latest `AUTH_SESSION_MAX_TTL` after its
+ * sign-in (absolute lifetime). Each refresh token expires at the earliest of its own lifetime and
+ * these two limits; a refresh past either limit revokes the session.
+ *
+ * Revoked and expired records are deleted by `cleanupExpiredSessions` once they are old enough
+ * (see `startSessionCleanup` for the daily run the backend provider starts).
  */
 import crypto from 'node:crypto';
 import { RefreshToken } from '../shapes/RefreshToken.js';
-import { REFRESH_TOKEN_EXPIRES } from './token.js';
+import {
+  REFRESH_TOKEN_EXPIRES,
+  SESSION_IDLE_TTL,
+  SESSION_MAX_TTL,
+  readTtlFromEnv,
+} from './token.js';
 import {
   generateRefreshToken,
   hashRefreshToken,
@@ -39,6 +52,8 @@ export interface RefreshSessionRecord {
   expiresAt: Date;
   revokedAt?: Date;
   replacedBy?: string;
+  /** When the session's sign-in happened. Absent on records from before it was stored. */
+  sessionStartedAt?: Date;
 }
 
 /**
@@ -55,6 +70,11 @@ export interface RefreshSessionStore {
     patch: Partial<Pick<RefreshSessionRecord, 'lastUsedAt' | 'revokedAt' | 'replacedBy'>>
   ): Promise<void>;
   delete(record: RefreshSessionRecord): Promise<void>;
+  /**
+   * Records revoked or expired before `cutoff` (for `cleanupExpiredSessions`). Optional: a store
+   * without it is not cleaned up.
+   */
+  findStale?(cutoff: Date): Promise<RefreshSessionRecord[]>;
 }
 
 function toDate(value: unknown): Date | undefined {
@@ -81,6 +101,7 @@ export class GraphRefreshSessionStore implements RefreshSessionStore {
       t.expiresAt,
       t.revokedAt,
       t.replacedBy,
+      t.sessionStartedAt,
     ]);
   }
 
@@ -96,6 +117,7 @@ export class GraphRefreshSessionStore implements RefreshSessionStore {
       expiresAt: toDate(row.expiresAt),
       revokedAt: toDate(row.revokedAt),
       replacedBy: row.replacedBy || undefined,
+      sessionStartedAt: toDate(row.sessionStartedAt),
     };
   }
 
@@ -107,6 +129,9 @@ export class GraphRefreshSessionStore implements RefreshSessionStore {
       createdAt: record.createdAt,
       expiresAt: record.expiresAt,
       ...(record.lastUsedAt ? { lastUsedAt: record.lastUsedAt } : {}),
+      ...(record.sessionStartedAt ? { sessionStartedAt: record.sessionStartedAt } : {}),
+      ...(record.revokedAt ? { revokedAt: record.revokedAt } : {}),
+      ...(record.replacedBy ? { replacedBy: record.replacedBy } : {}),
     });
     record.id = created?.id;
   }
@@ -152,6 +177,20 @@ export class GraphRefreshSessionStore implements RefreshSessionStore {
     if (!id) return;
     await RefreshToken.delete({ id });
   }
+
+  async findStale(cutoff: Date): Promise<RefreshSessionRecord[]> {
+    // Two simple queries rather than one OR: each is a plain range filter on one property.
+    const [expired, revoked] = await Promise.all([
+      GraphRefreshSessionStore.select().where((t) => (t.expiresAt as any).lt(cutoff)),
+      GraphRefreshSessionStore.select().where((t) => (t.revokedAt as any).lt(cutoff)),
+    ]);
+    const byId = new Map<string, RefreshSessionRecord>();
+    for (const row of [...(expired || []), ...(revoked || [])]) {
+      const record = GraphRefreshSessionStore.toRecord(row);
+      if (record) byId.set(record.id ?? record.tokenHash, record);
+    }
+    return [...byId.values()];
+  }
 }
 
 /** Keeps refresh token records in memory. For tests and single-process tooling only. */
@@ -184,6 +223,14 @@ export class MemoryRefreshSessionStore implements RefreshSessionStore {
   async delete(record: RefreshSessionRecord) {
     this.records.delete(record.tokenHash);
   }
+  async findStale(cutoff: Date) {
+    return [...this.records.values()]
+      .filter(
+        (r) =>
+          (r.expiresAt && r.expiresAt < cutoff) || (r.revokedAt && r.revokedAt < cutoff)
+      )
+      .map((r) => ({ ...r }));
+  }
 }
 
 let store: RefreshSessionStore = new GraphRefreshSessionStore();
@@ -201,20 +248,62 @@ export function generateSessionId(): string {
   return crypto.randomUUID();
 }
 
+/** Session lifetime limits in seconds (0 = no limit). Defaults from the environment. */
+export interface SessionLimits {
+  idleTtl: number;
+  maxTtl: number;
+  refreshTtl: number;
+}
+
+let limits: SessionLimits = {
+  idleTtl: SESSION_IDLE_TTL,
+  maxTtl: SESSION_MAX_TTL,
+  refreshTtl: REFRESH_TOKEN_EXPIRES,
+};
+
+/** The session limits in force. */
+export function getSessionLimits(): SessionLimits {
+  return { ...limits };
+}
+
+/**
+ * Override session limits (seconds; 0 = no limit) — for tests and tooling. Apps configure them
+ * with `AUTH_SESSION_IDLE_TTL`, `AUTH_SESSION_MAX_TTL` and `AUTH_REFRESH_TOKEN_TTL`.
+ */
+export function setSessionLimits(newLimits: Partial<SessionLimits>) {
+  limits = { ...limits, ...newLimits };
+}
+
+/**
+ * When a refresh token issued at `now` in a session that started at `sessionStartedAt` expires:
+ * the earliest of its own lifetime, the idle timeout and the session's absolute lifetime.
+ */
+export function refreshTokenExpiresAt(now: Date, sessionStartedAt: Date = now): Date {
+  let expires = now.getTime() + limits.refreshTtl * 1000;
+  if (limits.idleTtl > 0) {
+    expires = Math.min(expires, now.getTime() + limits.idleTtl * 1000);
+  }
+  if (limits.maxTtl > 0) {
+    expires = Math.min(expires, sessionStartedAt.getTime() + limits.maxTtl * 1000);
+  }
+  return new Date(expires);
+}
+
 /**
  * Store a new refresh token for an account and return the raw token.
- * Starts a new session unless `sessionId` is given.
+ * Starts a new session unless `sessionId` is given; a rotation passes the session's start.
  */
 export async function issueRefreshToken(
   accountId: string,
   sessionId: string = generateSessionId(),
-  now: Date = new Date()
+  now: Date = new Date(),
+  sessionStartedAt: Date = now
 ): Promise<{ refreshToken: string; sessionId: string; expiresAt: Date }> {
   if (!accountId) {
     throw new Error('@_linked/auth: cannot issue a refresh token without an account id');
   }
   const refreshToken = generateRefreshToken();
-  const expiresAt = new Date(now.getTime() + REFRESH_TOKEN_EXPIRES * 1000);
+  const expiresAt = refreshTokenExpiresAt(now, sessionStartedAt);
   await store.create({
     tokenHash: hashRefreshToken(refreshToken),
     sessionId,
@@ -222,8 +311,20 @@ export async function issueRefreshToken(
     createdAt: now,
     lastUsedAt: now,
     expiresAt,
+    sessionStartedAt,
   });
   return { refreshToken, sessionId, expiresAt };
+}
+
+/** When a record's session started: stored on the record, else its family's first createdAt. */
+async function sessionStartOf(record: RefreshSessionRecord): Promise<Date> {
+  if (record.sessionStartedAt) return record.sessionStartedAt;
+  const family = await store.findBySessionId(record.sessionId);
+  let start = record.createdAt;
+  for (const member of family) {
+    if (member.createdAt && (!start || member.createdAt < start)) start = member.createdAt;
+  }
+  return start ?? new Date(0);
 }
 
 export type RotateResult =
@@ -238,7 +339,19 @@ export type RotateResult =
     }
   | {
       ok: false;
-      reason: 'malformed' | 'unknown' | 'expired' | 'revoked' | 'reused';
+      /**
+       * - `idle`: the session was not refreshed within AUTH_SESSION_IDLE_TTL;
+       * - `session-expired`: the session is older than AUTH_SESSION_MAX_TTL.
+       * Both revoke the session.
+       */
+      reason:
+        | 'malformed'
+        | 'unknown'
+        | 'expired'
+        | 'revoked'
+        | 'reused'
+        | 'idle'
+        | 'session-expired';
     };
 
 function isActive(record: RefreshSessionRecord, now: Date) {
@@ -327,9 +440,27 @@ async function doRotate(tokenHash: string, now: Date): Promise<RotateResult> {
     return { ok: false, reason: 'expired' };
   }
 
+  // Session limits. New records already expire at the earlier limit, so this mostly catches
+  // records issued before the limits existed (or before they were lowered).
+  const lastUsed = record.lastUsedAt ?? record.createdAt;
+  if (limits.idleTtl > 0 && lastUsed && now.getTime() - lastUsed.getTime() > limits.idleTtl * 1000) {
+    await revokeSession(record.sessionId, now);
+    return { ok: false, reason: 'idle' };
+  }
+  const sessionStartedAt = await sessionStartOf(record);
+  if (limits.maxTtl > 0 && now.getTime() - sessionStartedAt.getTime() > limits.maxTtl * 1000) {
+    await revokeSession(record.sessionId, now);
+    return { ok: false, reason: 'session-expired' };
+  }
+
   // Create the replacement first: if revoking the old record fails, the user keeps a working
   // session rather than losing it.
-  const next = await issueRefreshToken(record.accountId, record.sessionId, now);
+  const next = await issueRefreshToken(
+    record.accountId,
+    record.sessionId,
+    now,
+    sessionStartedAt
+  );
   await store.update(record, {
     revokedAt: now,
     replacedBy: hashRefreshToken(next.refreshToken),
@@ -408,4 +539,94 @@ export async function deleteAllSessionsForAccount(accountId: string): Promise<nu
     await store.delete(record);
   }
   return records.length;
+}
+
+/** Default retention of revoked/expired records before cleanup deletes them: 30 days. */
+export const DEFAULT_CLEANUP_AFTER_SECONDS = 30 * 24 * 60 * 60;
+
+/**
+ * Delete refresh token records that were revoked or expired more than `olderThan` seconds ago.
+ * Active records, and recently revoked ones (still needed to detect reuse of a rotated token),
+ * are kept. Returns how many records were deleted.
+ *
+ * @param targetStore defaults to the configured store
+ * @param options.olderThan seconds (default 30 days, or `AUTH_SESSION_CLEANUP_AFTER`)
+ */
+export async function cleanupExpiredSessions(
+  targetStore: RefreshSessionStore = store,
+  {
+    olderThan = readTtlFromEnv('AUTH_SESSION_CLEANUP_AFTER', DEFAULT_CLEANUP_AFTER_SECONDS),
+    now = new Date(),
+  }: { olderThan?: number; now?: Date } = {}
+): Promise<number> {
+  if (typeof targetStore.findStale !== 'function') {
+    console.warn('@_linked/auth: this refresh session store cannot be cleaned up (no findStale)');
+    return 0;
+  }
+  const cutoff = new Date(now.getTime() - olderThan * 1000);
+  const stale = await targetStore.findStale(cutoff);
+  let deleted = 0;
+  for (const record of stale) {
+    // re-check: a store may return a superset
+    const eligible =
+      (record.revokedAt && record.revokedAt < cutoff) ||
+      (record.expiresAt && record.expiresAt < cutoff);
+    if (!eligible) continue;
+    await targetStore.delete(record);
+    deleted++;
+  }
+  return deleted;
+}
+
+const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** Delay before the first run, so cleanup never competes with startup. */
+const CLEANUP_FIRST_RUN_DELAY_MS = 5 * 60 * 1000;
+let lastCleanupAt = 0;
+let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * Run `cleanupExpiredSessions` in the background: first a few minutes after startup, then at most
+ * once a day per process (also across provider re-setup on hot reload). Never blocks, never
+ * throws: errors are logged. Off when `AUTH_SESSION_CLEANUP=false` (e.g. when several processes
+ * share a store and one job does it). Returns a function that stops it.
+ */
+export function startSessionCleanup(): () => void {
+  stopSessionCleanup();
+  const setting = (process.env.AUTH_SESSION_CLEANUP || '').toLowerCase();
+  if (setting === 'false' || setting === '0' || setting === 'off') {
+    return stopSessionCleanup;
+  }
+  const run = () => {
+    const now = Date.now();
+    if (now - lastCleanupAt < CLEANUP_INTERVAL_MS) return;
+    lastCleanupAt = now;
+    cleanupExpiredSessions()
+      .then((deleted) => {
+        if (deleted > 0) {
+          console.log(`@_linked/auth: deleted ${deleted} expired or revoked refresh token records`);
+        }
+      })
+      .catch((err) =>
+        console.warn('@_linked/auth: refresh token cleanup failed', err?.message ?? err)
+      );
+  };
+  const sinceLast = Date.now() - lastCleanupAt;
+  const firstDelay = Math.max(CLEANUP_FIRST_RUN_DELAY_MS, CLEANUP_INTERVAL_MS - sinceLast);
+  const schedule = (delay: number) => {
+    cleanupTimer = setTimeout(() => {
+      run();
+      schedule(CLEANUP_INTERVAL_MS);
+    }, delay);
+    // never keep the process alive for this
+    (cleanupTimer as any)?.unref?.();
+  };
+  schedule(lastCleanupAt ? firstDelay : CLEANUP_FIRST_RUN_DELAY_MS);
+  return stopSessionCleanup;
+}
+
+export function stopSessionCleanup() {
+  if (cleanupTimer) {
+    clearTimeout(cleanupTimer);
+    cleanupTimer = undefined;
+  }
 }
