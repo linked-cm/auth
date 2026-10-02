@@ -21,6 +21,7 @@ summary: >
 | 7 | `cachedTokenVerifications` caches by token for `ACCESS_TOKEN_EXPIRES` from **first use**, not until the token's own `exp` — an expired token is served as valid for up to one more lifetime — and is never pruned. | `src/utils/jwt.ts:15-28,107-119,237-241` |
 | 8 | Lifetimes are hard-coded with wrong comments ("1 hour" for 24 h, "24 hours" for 30/60 days); cookies are set with js-cookie passing **seconds as days** (an access cookie for 864 000 days). | `src/utils/token.ts:25-46,80-82` |
 | 9 | `updateSessionData` re-signs `request.linkedAuth`, which (after token auth) still carries `aud`/`iss`/`sub`; `jwt.sign` refuses a payload `aud` together with `options.audience`. | `src/utils/jwt.ts:11-14`, `src/utils/auth.ts:192` |
+| 10 | `removeAccount` passes whole query results (with nested data) to `delete()`, which rejects them (`Invalid node reference`), so account removal fails. Found by the integration test. | `src/backend.ts:1014-1021` |
 
 Create Now also verifies tokens itself with its own `jwt.verify` and the same `'jwt-secret'`
 fallback (`create_now/src/backend.ts` ~169-191, `reconstructLinkedAuthFromToken`) — it accepts
@@ -155,5 +156,8 @@ by the test): the same flows end to end through `createAccount` / `validateToken
 `resetPassword` against the real `RefreshToken` shape queries.
 
 Create Now, after release (master agent, Playwright, short TTLs e.g. `AUTH_ACCESS_TOKEN_TTL=60`):
-sign in → wait past access expiry → the session survives via refresh; reuse of an old refresh token
+sign in → wait past access expiry → **reload** → the session survives via refresh (the client's
+validation interval is computed from the client-side default lifetime, since `AUTH_*_TTL` is not
+visible in the browser, so without a reload an open tab only refreshes on that interval — the
+scheduler follow-up fixes this); reuse of an old refresh token
 revokes the session; sign out → refresh fails; a refresh token sent as Bearer is refused.

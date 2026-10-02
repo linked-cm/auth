@@ -10,8 +10,7 @@ import type {
   UserAccountData,
   UserData,
 } from '../types/auth.js';
-import { createToken } from './jwt.js';
-import { RefreshToken } from '../shapes/RefreshToken.js';
+import { createAccessToken, createToken } from './jwt.js';
 import { QResult } from '@_linked/core/queries/SelectQuery';
 import { BackendProvider } from '@_linked/server-utils/utils/BackendProvider.js';
 import { setQueryContext } from '@_linked/core/queries/QueryContext';
@@ -94,60 +93,67 @@ export class Auth {
         account.id
     );
     const request: Request & { linkedAuth: AuthSession } = provider.request;
+
+    try {
+      const authentication = await Auth.buildAuthSession(
+        provider,
+        person,
+        account,
+        isNewAccount
+      );
+
+      // create the access token and a stored refresh token (a new session)
+      const { accessToken, refreshToken, sessionId } = await createToken(
+        authentication
+      );
+
+      // set authentication to the request, remembering the session for updateSessionData
+      Auth.setAuthentication(request, { ...authentication, sid: sessionId });
+
+      return {
+        auth: authentication,
+        accessToken,
+        refreshToken,
+      } as AuthenticationResult;
+    } catch (err) {
+      console.error('Failed to create token', err);
+      throw err;
+    }
+  }
+
+  /**
+   * Build the AuthSession for a person + account, giving the app's backend providers the chance
+   * to add their data (`initialAuthSession`, and `extendAuthSession` for existing accounts).
+   * Used at sign-in and when a refresh token is exchanged for a new access token.
+   */
+  static async buildAuthSession(
+    provider: BackendProvider,
+    person: UserData,
+    account: UserAccountData,
+    isNewAccount: boolean = false
+  ): Promise<AuthSession> {
     const server = provider.lincdServer;
+    const authentication: AuthSession = {
+      userAccount: account,
+      user: person,
+    };
 
-    return new Promise(async (resolve, reject) => {
-      try {
-        // create authentication object
-        let authentication: AuthSession = {
-          userAccount: account,
-          user: person,
-        };
-
-        //Give the app its backend provider a chance to extend the authentication data with the default user and account data
-        //NOTE: this will be things like false/undefined values for extra properties that are not set yet
-        await server.callGenericBackendProvidersMethod(
-          'initialAuthSession',
-          authentication
-        );
-        //if this is not a new account, then it makes sense to allow backend providers
-        // to actually extend the authentication session.
-        //(if it IS a new account, we can just save the extra query and rely on the default values)
-        if (!isNewAccount) {
-          await server.callGenericBackendProvidersMethod(
-            'extendAuthSession',
-            authentication
-          );
-        }
-
-        // create JWT tokens for the person and account
-        const { accessToken, refreshToken } = await createToken(authentication);
-
-        //update: we don't need to save the token to the database, it only lives on the front-end
-        // // save refresh token to database
-        // if (refreshToken) {
-        //   const token = await RefreshToken.create({
-        //     token: refreshToken,
-        //     account: account,
-        //   });
-        //   console.log(`token`, JSON.stringify(token));
-        // }
-
-        // set authentication to the request
-        Auth.setAuthentication(request, authentication);
-
-        resolve({
-          auth: authentication,
-          accessToken,
-          refreshToken,
-          // user: person,
-          // userAccount: account,
-        } as AuthenticationResult);
-      } catch (err) {
-        console.error('Failed to create token', err);
-        reject(err);
-      }
-    });
+    //Give the app its backend provider a chance to extend the authentication data with the default user and account data
+    //NOTE: this will be things like false/undefined values for extra properties that are not set yet
+    await server.callGenericBackendProvidersMethod(
+      'initialAuthSession',
+      authentication
+    );
+    //if this is not a new account, then it makes sense to allow backend providers
+    // to actually extend the authentication session.
+    //(if it IS a new account, we can just save the extra query and rely on the default values)
+    if (!isNewAccount) {
+      await server.callGenericBackendProvidersMethod(
+        'extendAuthSession',
+        authentication
+      );
+    }
+    return authentication;
   }
 
   static setAuthentication(
@@ -175,11 +181,15 @@ export class Auth {
       // make sure accountOf sync with new user data
       // updatedUserAccount.accountOf = updatedUser;
 
+      // the session (refresh token family) the current access token belongs to, if any
+      const currentSessionId: string | undefined = request.linkedAuth?.sid;
+
       // create a new auth session object
-      const newAuthSession = {
+      const newAuthSession: AuthSession = {
         user: updatedUser,
         userAccount: updatedUserAccount,
         updateSessionData, // Keep the reference to this function
+        sid: currentSessionId,
       };
 
       // Update request.linkedAuth to point to the new session
@@ -189,9 +199,25 @@ export class Auth {
       setQueryContext('user', updatedUser, Person);
       setQueryContext('userAccount', updatedUserAccount, UserAccount);
 
-      const { accessToken, refreshToken } = await createToken(
-        request.linkedAuth
-      );
+      // Same session: a new access token, and the client keeps its refresh token. Rotating the
+      // refresh token here would revoke the one the client holds as a side effect of a profile
+      // update. A token from before sessions existed has no `sid`: start a session for it.
+      let accessToken: string;
+      let refreshToken: string;
+      if (currentSessionId) {
+        accessToken = await createAccessToken(
+          newAuthSession,
+          undefined,
+          currentSessionId
+        );
+        refreshToken = (request as any).cookies?.refreshToken;
+      } else {
+        let sessionId: string;
+        ({ accessToken, refreshToken, sessionId } = await createToken(
+          newAuthSession
+        ));
+        newAuthSession.sid = sessionId;
+      }
 
       return {
         auth: {

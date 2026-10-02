@@ -27,6 +27,28 @@ import { useNavigate } from 'react-router-dom';
 
 export const ENFORCE_SIGNED_IN = 'ENFORCE_SIGNIN';
 
+/**
+ * Seconds until a JWT's `exp`, read without verifying it (the server verifies; this only sizes
+ * the cookie). Undefined when the token cannot be read.
+ */
+function secondsUntilExpiry(jwt: string): number | undefined {
+  try {
+    const part = jwt.split('.')[1];
+    if (!part) return undefined;
+    const base64 = part.replace(/-/g, '+').replace(/_/g, '/');
+    const json =
+      typeof atob === 'function'
+        ? atob(base64)
+        : Buffer.from(base64, 'base64').toString('utf8');
+    const exp = JSON.parse(json)?.exp;
+    if (typeof exp !== 'number') return undefined;
+    const seconds = Math.floor(exp - Date.now() / 1000);
+    return seconds > 0 ? seconds : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 const AuthContext = createContext(null);
 
 interface AuthProviderProps {
@@ -219,7 +241,9 @@ function useProvideAuth(signinRoute: string = '') {
       setAuthToken({
         key: ACCESS_TOKEN,
         value: accessToken,
-        expires: ACCESS_TOKEN_EXPIRES,
+        // keep the cookie exactly as long as the token is valid (the server may be configured
+        // with a different lifetime than the client's defaults)
+        expires: secondsUntilExpiry(accessToken) ?? ACCESS_TOKEN_EXPIRES,
       });
 
       Server.addDefaultHeaders({
@@ -356,11 +380,14 @@ function useProvideAuth(signinRoute: string = '') {
     setUser(null);
     setUserAccount(null);
 
+    // the server revokes the session this refresh token belongs to
+    const refreshToken = await getAuthToken(REFRESH_TOKEN);
+
     // remove token from storage
     removeAuthToken(ACCESS_TOKEN);
     removeAuthToken(REFRESH_TOKEN);
 
-    const result = await Server.call(packageName, 'signout');
+    const result = await Server.call(packageName, 'signout', refreshToken);
     if (result) {
       // hard refresh to redirect after signout
       window.location.href = '/';
@@ -389,7 +416,9 @@ function useProvideAuth(signinRoute: string = '') {
       removeAuthToken(REFRESH_TOKEN);
     };
 
-    if (storedToken) {
+    // With only a refresh token left (the access token and its cookie expired), the server
+    // exchanges it for new tokens.
+    if (storedToken || refreshToken) {
       return Server.call(packageName, 'validateToken', refreshToken)
         .then((response) => {
           // check if response error
