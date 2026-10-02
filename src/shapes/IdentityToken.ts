@@ -69,7 +69,7 @@ export class IdentityToken extends Shape {
   @objectProperty({
     path: auth.account,
     maxCount: 1,
-    shape: ['@_linked/sioc', 'UserAccount'],
+    shape: UserAccount,
     description: 'The account of the identity token.',
   })
   get account(): UserAccount {

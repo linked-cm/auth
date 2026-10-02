@@ -1,5 +1,5 @@
-import { Person as FoafPerson } from 'foaf/shapes/Person';
 import { Person as SchemaPerson } from '@_linked/schema/shapes/Person';
+import type { Shape } from '@_linked/core/shapes/Shape';
 import { UserAccount } from '@_linked/sioc/shapes/UserAccount';
 import { BackendProvider } from '@_linked/server-utils/utils/BackendProvider';
 import session from 'express-session';
@@ -53,7 +53,11 @@ import { isCleanName } from './utils/name-validation.js';
 var SQLiteStore = connect_sqlite3(session);
 
 declare var process;
-type Person = FoafPerson | SchemaPerson;
+// The configured user shape (`Auth.userType`). Historically `SchemaPerson | FoafPerson`;
+// `foaf` was the last legacy `lincd` package in this dependency tree and the
+// union was type-only, so this widens to the same `typeof Shape` that
+// `AuthProviderProps.userType` already used.
+type Person = Shape;
 
 export * from './shapes/AuthCredentialProvider.js';
 

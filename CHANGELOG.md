@@ -1,5 +1,49 @@
 # @\_linked/auth
 
+## 1.6.3
+
+### Patch Changes
+
+- [#53](https://github.com/linked-fw/auth/pull/53) [`c752b50`](https://github.com/linked-fw/auth/commit/c752b5062db4eaa721a021a8dcc7fd37ca27c6c8) Thanks [@flyon](https://github.com/flyon)! - Add `shapes/index`, a side-effect-only module that registers every shape this package defines and nothing else (no components, no CSS), so `import '@_linked/auth/shapes/index'` loads the shapes in plain node as well as in a bundle. The package entry now imports it instead of listing shapes one by one.
+
+## 1.6.2
+
+### Patch Changes
+
+- [#51](https://github.com/linked-fw/auth/pull/51) [`fc82382`](https://github.com/linked-fw/auth/commit/fc823821e6a8b324ce6f36d8c15862e74d3b4e2c) Thanks [@flyon](https://github.com/flyon)! - Reference UserAccount and Person by class, so loading an auth shape registers them.
+
+  The shapes named them by `[package, name]`, which does not register anything. They
+  were registered only because `emitDecoratorMetadata` happened to keep the getter
+  return-type import alive in the tsc build; a consumer compiling the source with
+  esbuild (a localized checkout under Vite) emits no metadata, loses the import, and
+  queries traversing `account` or `credentialOf` throw `Shape class not found`.
+
+## 1.6.1
+
+### Patch Changes
+
+- [#43](https://github.com/linked-fw/auth/pull/43) [`0d4c713`](https://github.com/linked-fw/auth/commit/0d4c713d2213a69a6a4cb367cce96c8b6035ae7f) Thanks [@flyon](https://github.com/flyon)! - Sourcemaps now embed their TypeScript source, so consumers no longer see 'points to missing source files' warnings.
+
+## 1.6.0
+
+### Minor Changes
+
+- [#40](https://github.com/linked-fw/auth/pull/40) [`0581885`](https://github.com/linked-fw/auth/commit/0581885d4ff3841ac6b0dc709d7d605c59f479a7) Thanks [@flyon](https://github.com/flyon)! - Drop the `foaf` dependency — the last legacy `lincd` package reachable from this tree.
+
+  `foaf` was used for types only: no emitted `.js` in `lib/` ever imported it, so the legacy
+  `lincd` framework copy it pulls in (`lincd`, `lincd-jsonld`, `lincd-rdfs`,
+  `lincd-design-elems`) was never loaded at runtime — it only sat in the installed tree.
+
+  - `src/types/auth.ts` and `src/hooks/useAuth.tsx`: the import (and, in `useAuth`, the
+    `type Person` alias) were entirely unused. Removed.
+  - `src/backend.ts`: `type Person = FoafPerson | SchemaPerson` widened to `Shape`.
+  - `src/utils/auth.ts`: `Auth.userType` widened from
+    `typeof SchemaPerson | typeof FoafPerson` to `typeof Shape`, and the two
+    `QResult<SchemaPerson | FoafPerson>` callback positions to `QResult<Shape>`.
+
+  All three are widenings, so existing callers keep compiling; `AuthProviderProps.userType`
+  already used `typeof Shape`, so this makes the two sides agree.
+
 ## 1.5.0
 
 ### Minor Changes

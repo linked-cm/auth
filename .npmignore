@@ -3,4 +3,3 @@ src
 .idea
 Gruntfile.js
 tsconfig.json
-tsconfig-es5.json
