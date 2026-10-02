@@ -22,6 +22,7 @@ import type {
   OAuthProfilePayload,
   UserAccountData,
   UserData,
+  VerifiedOAuthIdentity,
 } from './types/auth.js';
 import { isOAuthProvider } from './types/auth.js';
 import { createToken, verifyToken } from './utils/jwt.js';
@@ -34,10 +35,14 @@ import AppleHelper, { buildAppleTokenAudiences } from './helpers/apple.js';
 import FacebookHelper from './helpers/facebook.js';
 import GoogleHelper from './helpers/google.js';
 import {
+  decideEmailMatchedAccount,
   resolveOAuthAccountInput,
   resolveVerifiedEmailAccount,
 } from './helpers/oauth-account.js';
-import { buildOAuthSubjectLinkId } from './helpers/oauth-subject-link.js';
+import {
+  buildOAuthSubjectLinkId,
+  providerOfSubjectLink,
+} from './helpers/oauth-subject-link.js';
 import PasswordHelper from './helpers/password.js';
 import { IdentityToken } from './shapes/IdentityToken.js';
 import path, { dirname, basename } from 'path';
@@ -49,6 +54,11 @@ import type { AuthSession } from './types/auth.js';
 import connect_sqlite3 from 'connect-sqlite3';
 import { emailToWebID } from './utils/webID.js';
 import { isCleanName } from './utils/name-validation.js';
+import {
+  isAcceptableNewPassword,
+  isCheckablePassword,
+  MIN_PASSWORD_LENGTH,
+} from './utils/password-policy.js';
 
 var SQLiteStore = connect_sqlite3(session);
 
@@ -66,6 +76,172 @@ const filename__ =
     ? __filename
     : //@ts-ignore
       basename(import.meta.url).replace('file:/', '');
+
+// OAuth helpers live outside the provider class on purpose: every method of a
+// backend provider can be invoked over RPC (`/call/<package>/<method>`), and
+// none of these may be reachable from a client.
+
+/**
+ * Verify a provider credential on the server and return only what the
+ * provider vouches for. Profile fields the client sent are never used for
+ * identity; the only client value kept is Apple's name, which Apple hands to
+ * the client (once) instead of putting it in the token.
+ */
+async function verifyOAuthIdentity(
+  provider: OAuthProvider,
+  oauthUserData: unknown
+): Promise<VerifiedOAuthIdentity | { error: string }> {
+  const data = (oauthUserData || {}) as Record<string, any>;
+
+  if (provider === 'apple') {
+    try {
+      const apple = await AppleHelper.validateIdentityToken(
+        (data as AppleOAuthPayload).identityToken,
+        {
+          nonce: (data as AppleOAuthPayload).nonce,
+          audiences: buildAppleTokenAudiences(
+            process.env.APP_ID,
+            process.env.APPLE_SIGN_IN_CLIENT_ID,
+            process.env.APPLE_IOS_BUNDLE_ID
+          ),
+        }
+      );
+      const profile = data as OAuthProfilePayload;
+      return {
+        provider,
+        subject: apple.sub,
+        email: apple.email,
+        emailVerified: apple.emailVerified,
+        givenName:
+          typeof profile.givenName === 'string' ? profile.givenName : undefined,
+        familyName:
+          typeof profile.familyName === 'string'
+            ? profile.familyName
+            : undefined,
+      };
+    } catch (error) {
+      console.error('Apple OAuth validation failed');
+      return { error: 'Invalid Apple identity token' };
+    }
+  }
+
+  if (provider === 'google') {
+    const idToken = (data as GoogleOAuthPayload).authentication?.idToken;
+    if (!idToken) {
+      console.error('Google OAuth: No ID token provided');
+      return { error: 'No Google ID token provided' };
+    }
+    const google = await GoogleHelper.validateIdToken(idToken);
+    if (!google) {
+      console.error('Google OAuth: Invalid ID token');
+      return { error: 'Invalid Google ID token' };
+    }
+    return {
+      provider,
+      subject: google.sub,
+      email: google.email,
+      emailVerified: google.email_verified === true,
+      givenName: google.given_name,
+      familyName: google.family_name,
+    };
+  }
+
+  try {
+    const facebook = await FacebookHelper.validateAccessToken(
+      (data as FacebookOAuthPayload).accessToken
+    );
+    return {
+      provider,
+      subject: facebook.id,
+      email: facebook.email,
+      // The Graph API gives no verification flag for the email.
+      emailVerified: false,
+      givenName: facebook.givenName,
+      familyName: facebook.familyName,
+    };
+  } catch (error) {
+    console.error('Facebook OAuth validation failed');
+    return { error: 'Invalid Facebook access token' };
+  }
+}
+
+type SubjectLinkRow = {
+  id: string;
+  sub?: string;
+  email?: string;
+  account?: UserAccountData;
+};
+
+/**
+ * Subject links for one provider identity: the deterministic link, plus (for
+ * Apple) links made before links had deterministic IRIs.
+ */
+async function findSubjectLinks(
+  provider: OAuthProvider,
+  subject: string
+): Promise<SubjectLinkRow[]> {
+  const linkId = buildOAuthSubjectLinkId(
+    process.env.DATA_ROOT,
+    provider,
+    subject
+  );
+  const rows: SubjectLinkRow[] = [];
+  const direct = await IdentityToken.select((token) => [
+    token.email,
+    token.sub,
+    token.account.select((account) => [account.email, account.accountOf]),
+  ]).for(linkId);
+  if (direct) rows.push(direct as SubjectLinkRow);
+
+  if (provider === 'apple') {
+    const legacy = await IdentityToken.getTokensBySubject(subject);
+    rows.push(
+      ...(legacy as SubjectLinkRow[]).filter(
+        (link) => providerOfSubjectLink(link) === 'apple'
+      )
+    );
+  }
+  return rows.filter((link) => link.account?.id);
+}
+
+async function linkedProvidersOfAccount(
+  accountId: string
+): Promise<OAuthProvider[]> {
+  const links = await IdentityToken.select((token) => [token.sub]).where(
+    (token) => token.account.equals({ id: accountId } as any)
+  );
+  return [
+    ...new Set(
+      (links as SubjectLinkRow[])
+        .map((link) => providerOfSubjectLink(link))
+        .filter((provider): provider is OAuthProvider => Boolean(provider))
+    ),
+  ];
+}
+
+async function personHasPassword(personId: string): Promise<boolean> {
+  const credentials = await AuthCredential.select((cred) => [
+    cred.passwordHash,
+  ]).where((cred) => cred.credentialOf.equals({ id: personId }));
+  return credentials.some((credential) => Boolean(credential.passwordHash));
+}
+
+async function createSubjectLink(
+  identity: VerifiedOAuthIdentity,
+  email: string | undefined,
+  account: { id: string }
+) {
+  await IdentityToken.create({
+    __id: buildOAuthSubjectLinkId(
+      process.env.DATA_ROOT,
+      identity.provider,
+      identity.subject
+    ),
+    ...(email ? { email } : {}),
+    sub: identity.subject,
+    account: { id: account.id },
+  } as any);
+}
 
 export default class AuthBackendProvider extends BackendProvider {
   public accountShape: typeof UserAccount = UserAccount;
@@ -266,11 +442,20 @@ export default class AuthBackendProvider extends BackendProvider {
     email: string,
     plainPassword: string
   ): Promise<AuthenticationResult> {
+    if (!isCheckablePassword(plainPassword)) {
+      return {
+        error: 'Invalid email / password combination',
+      };
+    }
+    if (typeof email !== 'string') {
+      return { error: 'Invalid email format' };
+    }
+
     let webID: string;
     try {
       webID = emailToWebID(email);
     } catch (error) {
-      console.error(`Invalid email format during signin: ${email}`, error);
+      console.error('Invalid email format during signin', error);
       return {
         error: 'Invalid email format',
       };
@@ -356,9 +541,21 @@ export default class AuthBackendProvider extends BackendProvider {
     password,
   }: CreateAccount): Promise<AuthenticationResult> {
     // check if the first name and email are provided
-    if (!firstName || !email) {
+    if (
+      !firstName ||
+      !email ||
+      typeof firstName !== 'string' ||
+      typeof email !== 'string' ||
+      (lastName != null && typeof lastName !== 'string')
+    ) {
       return {
         error: 'No first name or email are provided',
+      };
+    }
+
+    if (!isAcceptableNewPassword(password)) {
+      return {
+        error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters`,
       };
     }
 
@@ -374,10 +571,7 @@ export default class AuthBackendProvider extends BackendProvider {
     try {
       webIDFromEmail = emailToWebID(email);
     } catch (error) {
-      console.error(
-        `Invalid email format during account creation: ${email}`,
-        error
-      );
+      console.error('Invalid email format during account creation', error);
       return {
         error: 'Invalid email format',
       };
@@ -389,7 +583,7 @@ export default class AuthBackendProvider extends BackendProvider {
       .for(webIDFromEmail);
     if (existingWebID) {
       console.warn(
-        `Account creation attempted with existing email: ${email} (webID: ${webIDFromEmail})`
+        `Account creation attempted for an existing WebID: ${webIDFromEmail}`
       );
       return {
         error:
@@ -456,7 +650,7 @@ export default class AuthBackendProvider extends BackendProvider {
           person: user,
         };
       },
-      `createAccount - ${firstName} ${lastName} - ${email}`
+      'createAccount'
     );
   }
 
@@ -502,6 +696,12 @@ export default class AuthBackendProvider extends BackendProvider {
     confirmPassword: string,
     token: string
   ): Promise<AuthenticationResult> {
+    if (!isAcceptableNewPassword(password)) {
+      return {
+        error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters`,
+      };
+    }
+
     // check if password and confirmPassword match
     if (password !== confirmPassword) {
       return {
@@ -706,11 +906,23 @@ export default class AuthBackendProvider extends BackendProvider {
   }
 
   /**
-   * Sign in with OAuth provider
+   * Sign in with an OAuth provider.
+   *
+   * The provider credential is verified on the server first and only the
+   * claims the provider vouches for are used to find the account:
+   *
+   * 1. a stored subject link for this provider + subject signs straight in;
+   * 2. otherwise an existing account with the same email is attached only when
+   *    `decideEmailMatchedAccount` allows it, and fails closed with
+   *    `action: 'sign_in_to_link'` when it does not;
+   * 3. otherwise a new account is created, without a password.
+   *
+   * Every sign-in that reaches an account leaves a subject link behind, so the
+   * email is only ever consulted once per identity.
    *
    * @param provider - The OAuth provider
-   * @param oauthUserData
-   * @returns
+   * @param oauthUserData - The provider credential (token) plus, for Apple,
+   *   the name the client received on first consent
    */
   async signinOAuth<Provider extends OAuthProvider>(
     provider: Provider,
@@ -720,220 +932,119 @@ export default class AuthBackendProvider extends BackendProvider {
       return { error: 'Unsupported OAuth provider' };
     }
 
-    let { email, familyName, givenName } = oauthUserData as OAuthProfilePayload;
-    let appleSubject: string | undefined;
+    const identity = await verifyOAuthIdentity(provider, oauthUserData);
+    if ('error' in identity) return identity;
+
     let subjectAccount: UserAccountData | undefined;
-
-    if (provider === 'apple') {
-      const appleData = oauthUserData as AppleOAuthPayload;
-      let appleIdentity;
-      try {
-        appleIdentity = await AppleHelper.validateIdentityToken(
-          appleData.identityToken,
-          {
-            nonce: appleData.nonce,
-            audiences: buildAppleTokenAudiences(
-              process.env.APP_ID,
-              process.env.APPLE_SIGN_IN_CLIENT_ID,
-              process.env.APPLE_IOS_BUNDLE_ID
-            ),
-          }
-        );
-      } catch (error) {
-        console.error('Apple OAuth validation failed');
-        return { error: 'Invalid Apple identity token' };
-      }
-
-      email = appleIdentity.email;
-      appleSubject = appleIdentity.sub;
-      try {
-        const subjectTokens = await IdentityToken.getTokensBySubject(
-          appleSubject
-        );
-        const resolution = resolveOAuthAccountInput({
-          provider,
-          verifiedEmail: email,
-          subjectCandidates: subjectTokens.map((token) => ({
-            account: token.account,
-            email: token.email,
-          })),
-        });
-        if ('error' in resolution) return { error: resolution.error };
-        if ('account' in resolution) subjectAccount = resolution.account;
-        email = resolution.email;
-      } catch (error) {
-        console.error('Apple account resolution failed', error);
-        return {
-          error: 'Apple sign-in is temporarily unavailable. Please try again.',
-        };
-      }
+    let email: string | undefined;
+    try {
+      const links = await findSubjectLinks(provider, identity.subject);
+      const resolution = resolveOAuthAccountInput({
+        provider,
+        verifiedEmail: identity.email,
+        subjectCandidates: links.map((link) => ({
+          account: link.account,
+          email: link.email,
+        })),
+      });
+      if ('error' in resolution) return { error: resolution.error };
+      if ('account' in resolution) subjectAccount = resolution.account;
+      email = resolution.email;
+    } catch (error) {
+      console.error(`${provider} account resolution failed`, error);
+      return {
+        error: 'Sign-in is temporarily unavailable. Please try again.',
+      };
     }
 
-    if (provider === 'google') {
-      const googleData = oauthUserData as GoogleOAuthPayload;
-      const idToken = googleData.authentication?.idToken;
-      if (!idToken) {
-        console.error('Google OAuth: No ID token provided');
-        return { error: 'No Google ID token provided' };
-      }
-
-      const googlePayload = await GoogleHelper.validateIdToken(idToken);
-      if (!googlePayload) {
-        console.error('Google OAuth: Invalid ID token');
-        return { error: 'Invalid Google ID token' };
-      }
-
-      // Extract user data from validated Google payload
-      email = googlePayload.email;
-      givenName = googlePayload.given_name;
-      familyName = googlePayload.family_name;
+    if (subjectAccount) {
+      return Auth.onSigninSuccessful(
+        this,
+        subjectAccount.accountOf as UserData,
+        subjectAccount
+      );
     }
 
-    if (provider === 'facebook') {
-      const facebookData = oauthUserData as FacebookOAuthPayload;
-      try {
-        const facebookIdentity = await FacebookHelper.validateAccessToken(
-          facebookData.accessToken
-        );
-        email = facebookIdentity.email;
-        givenName = facebookIdentity.givenName;
-        familyName = facebookIdentity.familyName;
-      } catch (error) {
-        console.error('Facebook OAuth validation failed');
-        return { error: 'Invalid Facebook access token' };
-      }
-    }
-
-    // Apple generally returns email only on first consent. A verified subject
-    // link is therefore authoritative for repeat login.
-    if (!email) {
-      console.log('No verified email provided to signinOAuth:', provider);
-      return { error: 'could not find email in OAuth response' };
-    }
-
+    // resolveOAuthAccountInput only returns without an account when it has a
+    // verified email.
     email = String(email).trim().toLowerCase();
 
-    let expectedWebID: string | undefined;
-    let verifiedEmailAccount: UserAccountData | undefined;
-    if (!subjectAccount) {
-      try {
-        expectedWebID = emailToWebID(email);
-      } catch (error) {
-        console.error(
-          `Invalid email format during OAuth signin: ${email}`,
-          error
-        );
-        return { error: 'Invalid email format' };
-      }
-
-      const emailAccounts = await this.accountShape
-        .select((account) => [
-          account.email,
-          account.accountOf.select((person) => [
-            person.givenName,
-            person.familyName,
-            person.telephone,
-          ]),
-        ])
-        .where((account) => account.email.equals(email));
-      const emailResolution = resolveVerifiedEmailAccount(emailAccounts);
-      if (emailResolution.error) return { error: emailResolution.error };
-      verifiedEmailAccount = emailResolution.account;
+    let webID: string;
+    try {
+      webID = emailToWebID(email);
+    } catch (error) {
+      console.error(`Invalid email format during ${provider} sign-in`);
+      return { error: 'Invalid email format' };
     }
 
-    const createAppleIdentityLink = async (account: UserAccountData) => {
-      if (provider !== 'apple' || !appleSubject) return;
-      await IdentityToken.create({
-        __id: buildOAuthSubjectLinkId(
-          process.env.DATA_ROOT,
-          provider,
-          appleSubject
-        ),
-        email,
-        sub: appleSubject,
-        account,
-      } as any);
-    };
+    const emailAccounts = await this.accountShape
+      .select((account) => [account.email, account.accountOf])
+      .where((account) => account.email.equals(email));
+    const emailResolution = resolveVerifiedEmailAccount(emailAccounts);
+    if (emailResolution.error) return { error: emailResolution.error };
 
-    // use Auth.login pattern like createAccount for Google and other OAuth providers
+    let existingAccount = emailResolution.account as
+      | UserAccountData
+      | undefined;
+    if (!existingAccount) {
+      existingAccount = (await this.accountShape
+        .select((account) => [account.email, account.accountOf])
+        .where((account) => account.accountOf.equals({ id: webID }))
+        .one()) as UserAccountData | undefined;
+    }
+    let existingPersonId = existingAccount?.accountOf?.id;
+    if (!existingPersonId) {
+      // A person can exist without an account in this app (accounts are
+      // created on the fly), and it may hold a password.
+      const person = await (this.userShape as any)
+        .select((p) => [p.givenName])
+        .for(webID);
+      existingPersonId = person?.id;
+    }
+
+    if (existingPersonId) {
+      const decision = decideEmailMatchedAccount({
+        provider,
+        existing: {
+          hasPassword: await personHasPassword(existingPersonId),
+          linkedProviders: existingAccount
+            ? await linkedProvidersOfAccount(existingAccount.id)
+            : [],
+        },
+      });
+      if ('error' in decision) return decision;
+
+      const person = { id: existingPersonId } as UserData;
+      const account =
+        existingAccount ??
+        ((await this.getOrCreateAccount(person)) as UserAccountData);
+      await createSubjectLink(identity, email, account);
+      return Auth.onSigninSuccessful(this, person, account);
+    }
+
     return Auth.login(
       this,
+      async () => null,
       async () => {
-        if (subjectAccount) {
-          return {
-            account: subjectAccount,
-            person: subjectAccount.accountOf,
-          };
-        }
-
-        if (verifiedEmailAccount) {
-          await createAppleIdentityLink(verifiedEmailAccount);
-          return {
-            account: verifiedEmailAccount,
-            person: verifiedEmailAccount.accountOf,
-          };
-        }
-
-        // before we create a new user and account, check if the user already exists
-        // if exists, return the existing account and person so user can be signed in directly
-        const webID = expectedWebID!;
-
-        const existingAccount = await this.accountShape
-          .select((a) => {
-            return [
-              a.email,
-              a.accountOf.select((p) => [
-                p.givenName,
-                p.familyName,
-                p.telephone,
-              ]),
-            ];
-          })
-          .where((a) => {
-            return a.accountOf.equals({
-              id: webID,
-            });
-          })
-          .one();
-
-        if (!existingAccount) {
-          return null;
-        }
-
-        await createAppleIdentityLink(existingAccount);
-
-        return {
-          account: existingAccount,
-          person: existingAccount.accountOf,
-        };
-      },
-      async () => {
-        // create new user and account
-        const webID = expectedWebID!;
-
-        // prepare user data based on the provider
-        const userData = {
-          __id: webID,
-          givenName: givenName || '',
-          familyName: familyName || '',
-          telephone: '',
-        };
-
-        // create user
         const user = await (this.userShape as any)
-          .create(userData)
+          .create({
+            __id: webID,
+            givenName: identity.givenName || '',
+            familyName: identity.familyName || '',
+            telephone: '',
+          })
           .catch((err) => {
-            console.error(`Error creating ${provider} user - ${email}:`, err);
-            throw new Error(`Could not create ${provider} user - ${email}`);
+            console.error(`Error creating ${provider} user:`, err);
+            throw new Error(`Could not create ${provider} user`);
           });
 
-        // Create AuthCredential for OAuth user (no password needed)
+        // A credential row without a password hash: it carries the email for
+        // password reset, and signinWithPassword ignores rows without a hash.
         await AuthCredential.create({
           credentialOf: {
             id: user.id,
           },
           email: email,
-          // No passwordHash for OAuth users
         }).catch((err) => {
           console.error(
             `Error creating credential for ${provider} user ${user.id}:`,
@@ -943,17 +1054,12 @@ export default class AuthBackendProvider extends BackendProvider {
             `Could not create credential for ${provider} user ${user.id}`
           );
         });
-        console.log(`created new credential for ${user.id}`);
 
-        // Create account
-        const accountData: any = {
-          accountOf: user,
-          email: email,
-        };
-
-        // create account
         const account = await this.accountShape
-          .create(accountData)
+          .create({
+            accountOf: user,
+            email: email,
+          } as any)
           .catch((err) => {
             console.error(
               `Error creating ${provider} account for user ${user.id}:`,
@@ -964,18 +1070,15 @@ export default class AuthBackendProvider extends BackendProvider {
             );
           });
 
-        // Save Apple IdentityToken if this is an Apple sign-in
-        if (provider === 'apple' && appleSubject) {
-          await createAppleIdentityLink(account as UserAccountData).catch((err) => {
-            console.error(
-              `Error creating Apple IdentityToken for user ${user.id}:`,
-              err
-            );
-            throw new Error(
-              `Could not create Apple IdentityToken for user ${user.id}`
-            );
-          });
-        }
+        await createSubjectLink(identity, email, account as any).catch((err) => {
+          console.error(
+            `Error creating ${provider} subject link for user ${user.id}:`,
+            err
+          );
+          throw new Error(
+            `Could not create ${provider} subject link for user ${user.id}`
+          );
+        });
 
         return {
           account: account as any,
@@ -984,6 +1087,52 @@ export default class AuthBackendProvider extends BackendProvider {
       },
       `${provider} OAuth`
     );
+  }
+
+  /**
+   * Connect a provider identity to the account that is signed in right now.
+   *
+   * This is the explicit, proven way to attach a provider to an existing
+   * account: the session proves ownership of the account and the verified
+   * token proves ownership of the provider identity. `signinOAuth` refuses to
+   * do this by email on its own (`action: 'sign_in_to_link'`) and points here.
+   */
+  async linkOAuthIdentity<Provider extends OAuthProvider>(
+    provider: Provider,
+    oauthUserData: OAuthPayloadMap[Provider]
+  ): Promise<{ linked: true } | { error: string }> {
+    const account = (this.request?.linkedAuth as AuthSession | undefined)
+      ?.userAccount;
+    if (!account?.id) {
+      return { error: 'Sign in first to connect a sign-in method.' };
+    }
+    if (!isOAuthProvider(provider)) {
+      return { error: 'Unsupported OAuth provider' };
+    }
+
+    const identity = await verifyOAuthIdentity(provider, oauthUserData);
+    if ('error' in identity) return identity;
+
+    const links = await findSubjectLinks(provider, identity.subject);
+    const linkedAccountIds = new Set(
+      links.map((link) => link.account?.id).filter(Boolean)
+    );
+    if (linkedAccountIds.size === 1 && linkedAccountIds.has(account.id)) {
+      return { linked: true };
+    }
+    if (linkedAccountIds.size > 0) {
+      return {
+        error: `This ${provider} account is already connected to another account.`,
+      };
+    }
+    if ((await linkedProvidersOfAccount(account.id)).includes(provider)) {
+      return {
+        error: `This account is already connected to a different ${provider} account.`,
+      };
+    }
+
+    await createSubjectLink(identity, identity.email, account);
+    return { linked: true };
   }
 
   /**

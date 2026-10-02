@@ -331,7 +331,11 @@ function useProvideAuth(signinRoute: string = '') {
       }
 
       if (response?.error) {
-        return { error: String(response.error) };
+        // `action` tells the UI what the user can do next, e.g.
+        // 'sign_in_to_link' when the email belongs to an existing account.
+        return response.action
+          ? { error: String(response.error), action: String(response.action) }
+          : { error: String(response.error) };
       }
 
       console.warn(

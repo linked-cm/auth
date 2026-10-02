@@ -16,3 +16,19 @@ export function buildOAuthSubjectLinkId(
     .digest('hex');
   return `${root}/identity-token/${provider}/${subjectHash}`;
 }
+
+/**
+ * Which provider a stored subject link belongs to.
+ *
+ * Links made by {@link buildOAuthSubjectLinkId} carry the provider in their
+ * IRI. Older Apple links were created with a generated IRI and only a `sub`,
+ * so a link that has a subject but no provider segment is an Apple link.
+ */
+export function providerOfSubjectLink(link: {
+  id?: string;
+  sub?: string;
+}): OAuthProvider | undefined {
+  const match = link?.id?.match(/\/identity-token\/(apple|google|facebook)\/[0-9a-f]{64}$/);
+  if (match) return match[1] as OAuthProvider;
+  return link?.sub ? 'apple' : undefined;
+}
