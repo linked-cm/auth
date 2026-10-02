@@ -38,9 +38,13 @@ Facebook account creation depends on the application having permission to obtain
 |---|---|---|
 | Same account | Same account | Reuse the account |
 | Existing account | None | Reuse the subject-linked account |
-| None | Existing account | Reuse the verified-email account and add the subject link |
+| None | Existing account | Attach and add the subject link only if `decideEmailMatchedAccount` allows it (provider verifies email; account has no password; no Facebook link and no other identity at the same provider). Otherwise reject with `action: 'sign_in_to_link'` |
 | Different accounts | Different accounts | Reject as an identity conflict |
 | None | None | Create an account |
+
+Subject links are written for all three providers. Links made before that (Apple only, generated IRIs) are still found by `sub`.
+
+Attaching by email is the takeover-prone step. Account creation does not verify email ownership, so somebody can register a password account for another person's address in advance. Facebook's Graph API also gives no verification flag for the email. In those cases the user proves ownership by signing in the old way and calling `linkOAuthIdentity`.
 
 The conflict rule is intentional. Automatically joining two independently established accounts would be an account-takeover risk and can lose account-specific data.
 
@@ -76,7 +80,7 @@ Provider-specific helpers and the existing account-resolution tests cover creden
 
 ## Validation
 
-`npm test` performs a strict ESM TypeScript build before running the Node test suite. At wrapup, 35 tests passed with no failures. `git diff --check` also completed without whitespace errors.
+`npm test` performs a strict ESM TypeScript build before running the Node test suite. At review, 51 tests passed with no failures. `git diff --check` also completed without whitespace errors.
 
 ## Architecture documentation
 
@@ -87,7 +91,8 @@ The root `docs/architecture/08-identity-and-auth.md` records the portable OAuth 
 - The account-resolution tests exercise the resolver and provider boundaries without a live Fuseki integration environment.
 - Some backend behavior tests inspect source structure and are more brittle than behavioral integration tests.
 - Facebook sign-in cannot create or match an email account when the application lacks email permission.
-- Identity conflicts deliberately require a future explicit recovery or account-linking workflow.
+- Identity conflicts and refused email attaches require the user to sign in and call `linkOAuthIdentity`; there is no UI for that yet.
+- Accounts that signed in with Facebook before subject links existed have no link. Their Facebook sign-in is refused until they sign in another way (Google/Apple with the same email, or a password set through reset) and link Facebook.
 
 ## REVIEW
 
