@@ -37,26 +37,42 @@ Package imports intentionally omit the `.js` suffix. The package export map reso
 
 `signinOAuth` accepts `google`, `apple`, or `facebook`. The backend validates the provider credential before resolving or creating an account; caller-supplied profile claims are not accepted as proof of identity.
 
-- Google credentials are verified with Google's token verification endpoint.
-- Apple identity tokens are validated against Apple's signing keys and expected audience.
-- Facebook access tokens are checked against the configured application and then exchanged for the verified profile.
+- Google ID tokens are verified with `google-auth-library` (signature, issuer, expiry, and audience = one of the configured client IDs) and must carry `email_verified`.
+- Apple identity tokens are verified against Apple's signing keys (RS256, issuer, audience, expiry). The nonce the client sends must equal the token's `nonce` claim or be the value whose SHA-256 hex digest it is; only the hashed form protects a leaked token against replay.
+- Facebook access tokens are checked with `debug_token` using the app token (`is_valid`, `app_id`, `user_id`) before the profile is fetched, and the profile must belong to that user.
 
-Account resolution prefers a verified provider subject link and then a verified, normalized email address. If those identifiers point to different accounts, sign-in fails closed instead of merging them automatically.
+### Which account a provider identity reaches
 
-Provider configuration uses the corresponding environment values:
+1. A stored subject link for that provider and subject signs straight in.
+2. Otherwise, if an account already exists for the email, it is attached only when all of these hold — and every attach writes a subject link:
+   - the provider vouches for the email (Google and Apple do; Facebook's Graph API gives no verification flag, so a Facebook email never attaches to an existing account);
+   - the account has no password (account creation does not verify email ownership, so a password account may have been registered by somebody else in advance);
+   - the account is not already linked to a Facebook identity or to a different identity at the same provider.
+
+   Otherwise sign-in fails with `action: 'sign_in_to_link'`: the user signs in the way they did before and calls `linkOAuthIdentity(provider, payload)` from that session, which links the verified identity to the signed-in account.
+3. Otherwise a new account is created without a password.
+
+If identifiers point to more than one account, sign-in fails closed instead of merging them.
+
+Provider configuration uses these environment values:
 
 ```ini
-GOOGLE_CLIENT_ID=...
+DATA_ROOT=...                  # base IRI for subject links
+GOOGLE_CLIENT_ID=...           # any of the three Google client IDs may be set
+GOOGLE_CLIENT_ID_IOS=...
+GOOGLE_CLIENT_ID_ANDROID=...
+APP_ID=...                     # Apple audiences: any of these three
 APPLE_SIGN_IN_CLIENT_ID=...
-FACEBOOK_APP_ID=...
-FACEBOOK_APP_SECRET=...
+APPLE_IOS_BUNDLE_ID=...
+FACEBOOK_CLIENT_ID=...
+FACEBOOK_CLIENT_SECRET=...
 ```
 
 Facebook sign-in requires permission to retrieve the user's email address.
 
 ## Password authentication
 
-Password credentials use a normalized email address. OAuth-only accounts do not receive an implicit password; password sign-in checks that a password credential exists before attempting verification.
+Password credentials use a normalized email address. OAuth-only accounts do not receive an implicit password; password sign-in checks that a password credential exists before attempting verification, and an empty or non-string password is refused before any lookup. New and reset passwords must be at least six characters.
 
 Password reset email delivery requires an email provider package configured by the host application.
 
@@ -80,7 +96,7 @@ const user = auth.userAccount.accountOf;
 ## Build and test
 
 ```bash
-yarn linked build
+npx linked build
 npm test
 ```
 
