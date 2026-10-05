@@ -25,8 +25,24 @@ import type {
   VerifiedOAuthIdentity,
 } from './types/auth.js';
 import { isOAuthProvider } from './types/auth.js';
-import { createToken, verifyToken } from './utils/jwt.js';
-import { RefreshToken } from './shapes/RefreshToken.js';
+import {
+  createAccessToken,
+  verifyAccessToken,
+  verifyToken,
+} from './utils/jwt.js';
+import {
+  deleteAllSessionsForAccount,
+  findRefreshTokenExpiry,
+  findSessionIdForRefreshToken,
+  revokeAllSessionsForAccount,
+  revokeSession,
+  rotateRefreshToken,
+  startSessionCleanup,
+  stopSessionCleanup,
+} from './utils/sessions.js';
+import { clearAuthCookies, deliverTokens } from './utils/cookies.js';
+import { assertAuthSecrets } from './utils/secrets.js';
+import { refreshTokenExpiryFields } from './utils/token.js';
 import {
   emitAccountWillBeRemovedEvent,
   onAccountWillBeRemoved,
@@ -46,7 +62,6 @@ import {
 import PasswordHelper from './helpers/password.js';
 import { IdentityToken } from './shapes/IdentityToken.js';
 import path, { dirname, basename } from 'path';
-import crypto from 'node:crypto';
 import { LinkedEmail } from '@_linked/server-utils/utils/LinkedEmail';
 import { QResult } from '@_linked/core/queries/SelectQuery';
 import type { AuthSession } from './types/auth.js';
@@ -252,23 +267,35 @@ export default class AuthBackendProvider extends BackendProvider {
   private unsubscribeAccountRemoval?: () => void;
 
   async setupBeforeControllers() {
+    // Fail at startup, not on the first sign-in, when a production deployment lacks its secrets.
+    // This is the first thing the package runs at boot. The error is a FatalConfigError
+    // (`fatal: true`), which @_linked/server re-throws to abort startup instead of logging the
+    // failed hook and serving with broken auth.
+    const { jwtSecret, sessionSecret } = assertAuthSecrets(filename__);
+
     //if defined, take the values from the environment variables to define the shapes for the account and user
     await this.assignEnvPathToField('AUTH_ACCOUNT_TYPE', 'accountShape');
     await this.assignEnvPathToField('AUTH_USER_TYPE', 'userShape');
 
     this.unsubscribeAccountRemoval = onAccountWillBeRemoved(
       async (account: UserAccountData) => {
-        // Delete by relation instead of selecting IDs first. Besides using one
-        // mutation, this also handles legacy rows whose projected ID is missing.
-        // IdentityToken is defined here in Auth, so its cleanup belongs in this
-        // listener rather than in a dependent package's listener (moved from
-        // PeaceGame's listener for correct ownership).
-        await Promise.all([
-          RefreshToken.deleteWhere((rt) => rt.account.equals(account)),
-          IdentityToken.deleteWhere((token) => token.account.equals(account)),
-        ]);
+        try {
+          // Refresh-token rows are session records now, so removal goes through the
+          // session store. IdentityToken is defined here in Auth, so its cleanup
+          // belongs in this listener rather than in a dependent package.
+          await Promise.all([
+            deleteAllSessionsForAccount(account?.id),
+            IdentityToken.deleteWhere((token) => token.account.equals(account)),
+          ]);
+        } catch (err) {
+          console.error('Could not delete the sessions of a removed account', err);
+        }
       }
     );
+
+    // Delete long-revoked/expired refresh token records in the background (at most daily per
+    // process; AUTH_SESSION_CLEANUP=false turns it off).
+    startSessionCleanup();
 
     // set the user and account shapes for auth
     Auth.userType = this.userShape;
@@ -293,8 +320,11 @@ export default class AuthBackendProvider extends BackendProvider {
       'use',
       '/',
       expressjwt({
-        secret: process.env.JWT_SECRET || 'jwt-secret', // need to set this environment variable
+        secret: jwtSecret,
         algorithms: ['HS256'],
+        // getToken below only hands over verified access tokens; this repeats the audience check
+        // for the verification express-jwt does itself.
+        ...(process.env.SITE_ROOT ? { audience: process.env.SITE_ROOT } : {}),
         credentialsRequired: false, // allows unauthenticated requests to pass through
         getToken: async (
           req: Request & { auth: AuthSessionPayload } & {
@@ -303,12 +333,11 @@ export default class AuthBackendProvider extends BackendProvider {
         ): Promise<string> => {
           return this.validateRequestToken(req);
         },
-        // called only when exp has passed
-        onExpired: async (req, err) => {
-          // …issue a new token or just keep going
-          // req.auth will be undefined, so unauthenticated routes still work
-          await this.validateRequestToken(req, true);
-        },
+        // An expired access token leaves the request anonymous (req.auth stays undefined).
+        // It is NOT refreshed here: a token minted in middleware never reaches the client, and
+        // rotating the refresh token without delivering the new one would make the client's next
+        // refresh look like token theft. Clients refresh through the validateToken RPC.
+        onExpired: async () => {},
       }).unless({
         // Skip token verification for all static assets
         path: [
@@ -321,27 +350,11 @@ export default class AuthBackendProvider extends BackendProvider {
       })
     );
 
-    let secret;
-    if (process.env.SESSION_SECRET) {
-      secret = process.env.SESSION_SECRET;
-    } else {
-      if (process.env.NODE_ENV !== 'development') {
-        console.warn(
-          'Please set the environment variable SESSION_SECRET\n' +
-            'This is to ensure the sessions of this app are securely stored.\n' +
-            'Preferably use a string of mixed characters. If this is a LINCD app, you can add the SESSION_SECRET to `.env-cmdrc.json`.\n' +
-            'For now a less secure fallback method will be used.\n' +
-            'See also https://www.npmjs.com/package/express-session#secret and https://www.npmjs.com/package/cookie-session#secret\n'
-        );
-      }
-      secret = crypto.createHash('md5').update(filename__).digest('hex');
-    }
-
     this.registerRoute(
       'use',
       '/',
       session({
-        secret: secret,
+        secret: sessionSecret,
         name: '@_linked/auth',
         //TODO: this broke sessions in production, need to check what else we need to do to make secure sessions work
         // cookie: {secure: process.env.NODE_ENV === 'production'},
@@ -358,23 +371,24 @@ export default class AuthBackendProvider extends BackendProvider {
     // Plan-011 — remove the middleware we tracked above + unsubscribe
     // the account-removed listener so HMR doesn't leak handlers.
     this.disposeRoutes();
+    stopSessionCleanup();
     this.unsubscribeAccountRemoval?.();
     this.unsubscribeAccountRemoval = undefined;
   }
 
-  async validateRequestToken(request, accessTokenExpired: boolean = false) {
-    // get the token from request headers or cookies
-    let token = this.getTokenFromRequest(request);
-    let refreshToken = this.getRefreshTokenFromRequest(request);
-
-    // if token is found, validate it
-    if (token) {
+  /**
+   * Authenticate an incoming request from its access token (Bearer header or `accessToken`
+   * cookie). Only a valid access token counts; refresh tokens are never accepted here.
+   *
+   * @returns the access token if it is valid, otherwise null
+   */
+  async validateRequestToken(request, _accessTokenExpired: boolean = false) {
+    // the Bearer header first, then the `accessToken` cookie (see getTokenCandidates)
+    for (const token of this.getTokenCandidates(request)) {
       const verificationResult = await verifyToken({
         request,
         token,
-        refreshToken,
         provider: this,
-        accessTokenExpired,
       });
 
       // if token is valid, set the authentication object
@@ -762,6 +776,10 @@ export default class AuthBackendProvider extends BackendProvider {
         passwordHash: newHashedPassword,
       }).for(dbPassword);
     }
+
+    // A new password ends every existing session (other devices, and anyone holding a stolen
+    // refresh token). The current device gets a fresh session below.
+    await revokeAllSessionsForAccount(account.id);
 
     const person = user;
     return Auth.onSigninSuccessful(this, person, account);
@@ -1247,6 +1265,7 @@ export default class AuthBackendProvider extends BackendProvider {
     }
 
     await emitAccountWillBeRemovedEvent(account);
+    await deleteAllSessionsForAccount(account.id);
 
     // Remove every credential for the user without relying on a projected ID.
     await AuthCredential.deleteWhere((credential) =>
@@ -1258,115 +1277,244 @@ export default class AuthBackendProvider extends BackendProvider {
     await this.userShape.delete({ id: user.id });
 
     console.log('Account has been deleted', account.id);
-    this.signout();
+    await this.signout();
 
     return true;
   }
 
   /**
-   * Sign out the user and remove the refresh token from the database
+   * Sign out: revoke the current session, so its refresh token can no longer be used, and clear
+   * the auth cookies.
    *
-   * @returns A promise that resolves to a boolean indicating the success of sign-out
+   * The session is taken from the access token (`sid`) and/or from the refresh token the client
+   * passes (native clients) or sends as the `refreshToken` cookie. The access token itself stays
+   * valid until it expires (at most AUTH_ACCESS_TOKEN_TTL).
+   *
+   * @param refreshToken - Optional refresh token of the session to end
+   * @returns true if the user was signed in or a session was revoked
    */
-  async signout(): Promise<boolean> {
-    return new Promise((resolve, reject) => {
-      try {
-        const auth = this.request.linkedAuth;
-        if (!auth) {
-          resolve(false);
-          return;
-        }
+  async signout(refreshToken?: string): Promise<boolean> {
+    const request = this.request;
+    const response = this.response;
+    try {
+      const auth: any = request?.linkedAuth;
+      refreshToken = refreshToken || this.getRefreshTokenFromRequest(request);
 
-        resolve(true);
-      } catch (err) {
-        console.warn('error during signout: ', err.toString());
-        reject(err);
+      const sessionIds = new Set<string>();
+      if (auth?.sid) {
+        sessionIds.add(auth.sid);
       }
-    });
+      if (refreshToken) {
+        const sessionId = await findSessionIdForRefreshToken(refreshToken);
+        if (sessionId) sessionIds.add(sessionId);
+      }
+
+      let revoked = 0;
+      for (const sessionId of sessionIds) {
+        revoked += await revokeSession(sessionId);
+      }
+      return Boolean(auth) || revoked > 0;
+    } catch (err) {
+      console.warn('error during signout: ', err.toString());
+      throw err;
+    } finally {
+      // whatever happened to the session, this browser is signed out
+      clearAuthCookies(request, response);
+    }
   }
 
   /**
-   * Validate the bearer token header and return the authentication result
+   * Validate the client's tokens and return the authentication result. This is also where the
+   * client refreshes: the response sets new cookies and carries the new access token.
    *
-   * @param refreshToken - Optional refresh token
+   * - A valid access token (and no `forceRefresh`): returned as is.
+   * - Otherwise, with a refresh token (the httpOnly `refreshToken` cookie, or the argument from a
+   *   native client): the refresh token is exchanged (see utils/sessions.ts) for a new access
+   *   token and, normally, a new refresh token. The old refresh token is then dead.
+   * - A refresh that fails clears the auth cookies.
+   *
+   * @param refreshToken - Optional refresh token (native clients; browsers send the cookie)
+   * @param options.forceRefresh - refresh even if the access token is still valid (the client's
+   *   scheduler does this shortly before `exp`)
    * @returns A promise that resolves to an authentication result
    */
-  async validateToken(refreshToken?: string): Promise<AuthenticationResult> {
-    // get the token from request headers or cookies
+  async validateToken(
+    refreshToken?: string,
+    options: { forceRefresh?: boolean } = {}
+  ): Promise<AuthenticationResult> {
     const request = this.request;
-    let token = this.getTokenFromRequest(request);
+    const response = this.response;
     refreshToken = refreshToken || this.getRefreshTokenFromRequest(request);
+    const candidates = this.getTokenCandidates(request);
 
-    // if token is found, validate it
-    if (token) {
-      try {
-        const verificationResult: any = await verifyToken({
-          request,
-          token,
-          refreshToken,
-          provider: this,
-        });
-
-        // if token is valid, set the authentication object
-        // and return the payload with new access token and refresh token
-        if (verificationResult) {
-          const authentication = Auth.setAuthentication(
-            request,
-            verificationResult.payload
-          );
-
-          if (!authentication) {
-            return {
-              error: 'Invalid token',
-            };
-          }
-
-          return {
-            auth: authentication,
-            accessToken: verificationResult.accessToken,
-            refreshToken: verificationResult.refreshToken,
-          };
-        } else {
-          // if token is invalid, return error
-          return {
-            error: 'Invalid token',
-          };
-        }
-      } catch (err) {
-        // error while decoding token
-        return {
-          error: 'Token decoding error',
-        };
-      }
+    if (candidates.length === 0 && !refreshToken) {
+      // no token found in Authorization header or cookies
+      return {
+        error: 'No token found',
+      };
     }
 
-    // no token found in Authorization header or cookies
-    return {
-      error: 'No token found',
-    };
+    try {
+      let token: string | undefined;
+      let payload: ReturnType<typeof verifyAccessToken> = false;
+      for (const candidate of candidates) {
+        payload = verifyAccessToken(candidate);
+        if (payload) {
+          token = candidate;
+          break;
+        }
+      }
+      if (payload && !(options?.forceRefresh && refreshToken)) {
+        const authentication = Auth.setAuthentication(request, payload);
+        // Tell the client how long the server honours its refresh token.
+        const refreshTokenExpiresAt = refreshToken
+          ? await findRefreshTokenExpiry(refreshToken)
+          : undefined;
+        // Re-set the access cookie when the browser does not hold this token as an httpOnly
+        // cookie yet (it came from the header, or from a cookie written by an older client).
+        const cookieIsCurrent = (request as any)?.cookies?.accessToken === token;
+        return deliverTokens(
+          request,
+          cookieIsCurrent ? false : response,
+          {
+            auth: authentication,
+            accessToken: token,
+            refreshToken,
+            ...refreshTokenExpiryFields(refreshTokenExpiresAt),
+          },
+          { newRefreshToken: false }
+        );
+      }
+
+      if (refreshToken) {
+        return await this.refreshSession(refreshToken);
+      }
+
+      return {
+        error: 'Invalid token',
+      };
+    } catch (err) {
+      console.error('@_linked/auth: token validation failed', err);
+      return {
+        error: 'Token decoding error',
+      };
+    }
   }
 
   /**
-   * Gets the access token from the request.
-   * This method checks the Authorization header for a Bearer token
-   * or looks for a cookie named 'accessToken'.
-   * @param req
+   * Exchange a refresh token for a new access token (and a new refresh token).
+   * The user and account are reloaded, and the app's providers can extend the session again
+   * (`initialAuthSession` / `extendAuthSession`), exactly as at sign-in.
+   */
+  protected async refreshSession(
+    refreshToken: string
+  ): Promise<AuthenticationResult> {
+    const request = this.request;
+    const response = this.response;
+    const rotation = await rotateRefreshToken(refreshToken);
+    if (rotation.ok === false) {
+      clearAuthCookies(request, response);
+      return {
+        error: 'Invalid refresh token',
+      };
+    }
+
+    const account = await this.loadAccountForSession(rotation.accountId);
+    if (!account) {
+      // the account is gone; nothing may be refreshed for it any more
+      await revokeSession(rotation.sessionId);
+      clearAuthCookies(request, response);
+      return {
+        error: 'Invalid refresh token',
+      };
+    }
+    const person = await this.loadUserForSession(account);
+
+    const authentication = await Auth.buildAuthSession(this, person, account);
+    const accessToken = await createAccessToken(
+      authentication,
+      undefined,
+      rotation.sessionId
+    );
+    const linkedAuth = Auth.setAuthentication(request, {
+      ...authentication,
+      sid: rotation.sessionId,
+    });
+
+    return deliverTokens(
+      request,
+      response,
+      {
+        auth: linkedAuth,
+        accessToken,
+        refreshToken: rotation.refreshToken,
+        ...refreshTokenExpiryFields(rotation.refreshTokenExpiresAt),
+      },
+      { refreshTokenExpiresAt: rotation.refreshTokenExpiresAt }
+    );
+  }
+
+  /** The account a refresh token was issued to, with the fields a sign-in provides. */
+  protected async loadAccountForSession(
+    accountId: string
+  ): Promise<UserAccountData | null> {
+    const account: any = await (this.accountShape as any)
+      .select((a) => [a.email, a.accountOf])
+      .for({ id: accountId });
+    if (!account || !account.accountOf) {
+      return null;
+    }
+    return account as UserAccountData;
+  }
+
+  /**
+   * The person behind an account. Not every person is stored locally (a WebID can be hosted by
+   * the identity provider), so this falls back to the bare id.
+   */
+  protected async loadUserForSession(
+    account: UserAccountData
+  ): Promise<UserData> {
+    const id = (account.accountOf as any)?.id;
+    try {
+      const person = await (this.userShape as any)
+        .select((p) => [p.givenName, p.familyName, p.telephone])
+        .for({ id });
+      if (person) return person as UserData;
+    } catch (err) {
+      console.warn(`@_linked/auth: could not load person ${id} for refresh`, err);
+    }
+    return { id } as UserData;
+  }
+
+  /**
+   * Gets the access token from the request: the Bearer header, else the `accessToken` cookie.
    * @protected
    */
   protected getTokenFromRequest(req: Request) {
-    if (
-      req.headers.authorization &&
-      req.headers.authorization.split(' ')[0] === 'Bearer'
-    ) {
-      return req.headers.authorization.split(' ')[1];
-    } else if (req.cookies && req.cookies.accessToken) {
-      return req.cookies.accessToken;
-    }
-    return null;
+    return this.getTokenCandidates(req)[0] ?? null;
   }
 
-  // get refresh token from request
+  /**
+   * The access tokens a request carries, in the order they are tried: the Bearer header first,
+   * then the `accessToken` cookie. Both are tried because a browser tab may hold a stale token in
+   * memory (sent as the header) while the httpOnly cookie was already renewed by another tab.
+   * @protected
+   */
+  protected getTokenCandidates(req: Request): string[] {
+    const tokens: string[] = [];
+    const header = req?.headers?.authorization;
+    if (header && header.split(' ')[0] === 'Bearer' && header.split(' ')[1]) {
+      tokens.push(header.split(' ')[1]);
+    }
+    const cookie = (req as any)?.cookies?.accessToken;
+    if (cookie && !tokens.includes(cookie)) {
+      tokens.push(cookie);
+    }
+    return tokens;
+  }
+
+  // get refresh token from request (the httpOnly cookie)
   protected getRefreshTokenFromRequest(req: Request) {
-    return req.cookies && req.cookies.refreshToken;
+    return (req as any)?.cookies && (req as any).cookies.refreshToken;
   }
 }

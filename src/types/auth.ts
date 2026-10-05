@@ -2,6 +2,7 @@ import type { JwtPayload } from 'jsonwebtoken';
 import { Person as SchemaPerson } from '@_linked/schema/shapes/Person';
 import { UserAccount } from '@_linked/sioc/shapes/UserAccount';
 import { QResult } from '@_linked/core/queries/SelectQuery';
+import type { RefreshTokenExpiry } from '../utils/token.js';
 
 /**
  * The payload of the auth token use on backend.
@@ -12,11 +13,12 @@ export interface AuthSessionPayload extends JwtPayload, AuthSession {}
  * The result of a successful authentication use on backend.
  */
 export type AuthenticationResult =
-  | {
+  | ({
       auth: AuthSession;
       accessToken: string;
-      refreshToken: string;
-    }
+      /** Only for native clients (body transport); browsers get it as an httpOnly cookie. */
+      refreshToken?: string;
+    } & RefreshTokenExpiry)
   | {
       error: string;
       action?: string;
@@ -91,8 +93,9 @@ export type CreateAccount = {
 export type AuthenticationResponse = {
   auth: AuthSession;
   accessToken: string;
-  refreshToken: string;
-};
+  /** Only for native clients (body transport); browsers get it as an httpOnly cookie. */
+  refreshToken?: string;
+} & RefreshTokenExpiry;
 
 export type UserData = QResult<
   SchemaPerson,
@@ -114,12 +117,18 @@ export type UserAccountData<User extends UserData = UserData> = QResult<
 export type AuthSession<UserAccount = UserAccountData, User = UserData> = {
   userAccount: UserAccount;
   user: User;
+  /**
+   * The session (refresh token family) the current access token belongs to. Set on the server
+   * from the access token's `sid` claim; absent for tokens issued before sessions were stored.
+   */
+  sid?: string;
   updateSessionData?: (
     updatedData: Omit<AuthSession, 'updateSessionData'>
   ) => Promise<{
     auth: AuthSession;
     accessToken: string;
-    refreshToken: string;
+    /** Only for native clients (body transport); browsers get it as an httpOnly cookie. */
+    refreshToken?: string;
   }>;
 };
 

@@ -11,9 +11,17 @@ export var loadData = () => {
 };
 
 /**
- * The namespace of this ontology, which can be used to create NamedNodes with URI's not listed in this file
+ * The namespace of this ontology, which can be used to create NamedNodes with URI's not listed in this file.
+ *
+ * First-party ontologies live on linked.cm: `https://linked.cm/ont/{ontologySlug}/`, and a
+ * package's own ontology takes the package's publicSlug (`@_linked/auth` → `auth`), the same slug
+ * its shapes use under `https://linked.cm/shape/auth/`.
+ *
+ * Until 2.0 this was `http://lincd.org/ont/auth/`. Data stored under that namespace is invisible
+ * to this release until it is rewritten — see `migrateAuthNamespace` in
+ * `@_linked/auth/utils/migrateNamespace`.
  */
-export var ns = createNameSpace('http://lincd.org/ont/auth/');
+export var ns = createNameSpace('https://linked.cm/ont/auth/');
 
 /**
  * The NamedNode of the ontology itself
@@ -38,6 +46,14 @@ export var phoneIdentifier = ns('phoneIdentifier');
 export var forgotPasswordToken = ns('forgotPasswordToken');
 export var telephone = ns('telephone');
 export var hash = ns('hash');
+export var tokenHash = ns('tokenHash');
+export var sessionId = ns('sessionId');
+export var createdAt = ns('createdAt');
+export var lastUsedAt = ns('lastUsedAt');
+export var expiresAt = ns('expiresAt');
+export var revokedAt = ns('revokedAt');
+export var replacedBy = ns('replacedBy');
+export var sessionStartedAt = ns('sessionStartedAt');
 
 //An extra grouping object so all the entities can be accessed from the prefix/name
 export const auth = {
@@ -57,5 +73,13 @@ export const auth = {
   forgotPasswordToken,
   telephone,
   hash,
+  tokenHash,
+  sessionId,
+  createdAt,
+  lastUsedAt,
+  expiresAt,
+  revokedAt,
+  replacedBy,
+  sessionStartedAt,
 };
 

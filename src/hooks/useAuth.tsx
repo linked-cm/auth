@@ -8,13 +8,24 @@ import { Shape } from '@_linked/core/shapes/Shape';
 import { useQueryContext } from '@_linked/react/utils/useQueryContext';
 import {
   ACCESS_TOKEN,
-  ACCESS_TOKEN_EXPIRES,
   REFRESH_TOKEN,
-  REFRESH_TOKEN_EXPIRES,
   getAuthToken,
+  isNativeTokenStorage,
   removeAuthToken,
-  setAuthToken,
+  storeAuthTokens,
 } from '../utils/token.js';
+import {
+  getAccessTokenExpiresAt,
+  hasSessionHint,
+  installServerCallRetry,
+  installVisibilityRefresh,
+  refreshAccessToken,
+  resetAuthClient,
+  scheduleRefreshAt,
+  setAccessToken,
+  setRefreshHandler,
+} from '../utils/authClient.js';
+import type { RefreshTokenExpiry } from '../utils/token.js';
 import { useAppContext } from '@_linked/server-utils/components/AppContext';
 import type {
   OAuthProvider,
@@ -26,6 +37,21 @@ import type { UserData, UserAccountData } from '../types/auth.js';
 import { useNavigate } from 'react-router-dom';
 
 export const ENFORCE_SIGNED_IN = 'ENFORCE_SIGNIN';
+
+/**
+ * Keep the previous object when the new one holds the same data. Every refresh delivers a new
+ * `user`/`userAccount` object; replacing an unchanged one would re-run every effect that depends
+ * on it (apps key data loading on `auth.user`).
+ */
+export function keepIfUnchanged<T>(previous: T, next: T): T {
+  if (previous === next || !previous || !next) return next;
+  if ((previous as any).id !== (next as any).id) return next;
+  try {
+    return JSON.stringify(previous) === JSON.stringify(next) ? previous : next;
+  } catch {
+    return next;
+  }
+}
 
 const AuthContext = createContext(null);
 
@@ -69,7 +95,7 @@ export const useAuth = <
     auth?: AuthSession<UserType, AccountType>;
     accessToken?: string;
     refreshToken?: string;
-  }) => AuthenticationResponse;
+  } & RefreshTokenExpiry) => AuthenticationResponse;
   signinWithPassword: (
     email: string,
     password: string
@@ -136,6 +162,8 @@ function useProvideAuth(signinRoute: string = '') {
         auth,
         accessToken: newAccessToken,
         refreshToken: newRefreshToken,
+        refreshTokenExpiresIn: requestObject.linkedAuth.refreshTokenExpiresIn,
+        refreshTokenExpiresAt: requestObject.linkedAuth.refreshTokenExpiresAt,
       });
     }
   }, [
@@ -144,54 +172,51 @@ function useProvideAuth(signinRoute: string = '') {
   ]);
 
   useEffect(() => {
-    // register the action handler to enforce signed in
+    // A call the server refused because the request was not signed in: most often an access
+    // token that expired while the tab slept. Try one refresh before signing out.
     Server.registerActionHandler(ENFORCE_SIGNED_IN, ({ preventDefault }) => {
-      //logging out the user on the frontend should be sufficient redirect the user to the sign-in page if the app uses RequireAuth
-      signout();
       preventDefault();
+      refreshAccessToken().then((ok) => {
+        if (!ok) signout();
+      });
     });
 
-    /**
-     * Validate token on component mount
-     */
-    const startTokenValidation = async () => {
-      // set interval to validate token every ACCESS_TOKEN_EXPIRES
-      const interval = setInterval(async () => {
-        validateToken();
-        //TODO: replace interval with something better, see bottom of this file
-      }, (ACCESS_TOKEN_EXPIRES * 1000) / 5);
-      // console.log(`validating token every ${ (ACCESS_TOKEN_EXPIRES * 1000) / 3} ms or ${ACCESS_TOKEN_EXPIRES / 3} seconds`);
+    // Keep the session alive: refresh shortly before the access token expires (single flight),
+    // again when the tab wakes up with a stale token, and once after a 401 (with one retry).
+    const unregisterRefresh = setRefreshHandler(refreshSession);
+    installServerCallRetry();
+    const removeVisibilityRefresh = installVisibilityRefresh();
 
-      // clear interval on unmount
-      return () => {
-        clearInterval(interval);
-      };
-    };
-    startTokenValidation();
-    if (!auth) {
-      //Apps may have tokens but will not have an auth instance just yet
-      //because they don't receive LD from the server since there is not initial page request
-      // so we need to validate the token immediately
-      // if valid tokens are present in the cookies, it will lead to a successful validation
-      // if not, it will lead to a signout & redirect to the signin page
-      setValidating(true);
-      validateToken().then(() => {
-        setValidating(false);
-      });
+    // A server-rendered page knows the access token's expiry (the token itself is an httpOnly
+    // cookie): schedule the refresh from it.
+    const exp = (defaultAuth as any)?.exp;
+    const iat = (defaultAuth as any)?.iat;
+    if (typeof exp === 'number' && getAccessTokenExpiresAt() === undefined) {
+      scheduleRefreshAt(exp * 1000, Date.now(), undefined, typeof iat === 'number' ? iat * 1000 : undefined);
     }
 
-    // check if a token is already stored and set it as default header
-    const getToken = async () => {
-      const token = await getAuthToken(ACCESS_TOKEN);
-      if (token) {
-        Server.addDefaultHeaders({
-          Authorization: `Bearer ${token}`,
-        });
-      } else {
-        // signout();
+    const init = async () => {
+      if (isNativeTokenStorage()) {
+        // native: the stored access token is sent as the Authorization header
+        const token = await getAuthToken(ACCESS_TOKEN);
+        if (token) setAccessToken(token);
+      }
+      if (!auth) {
+        // No auth from a server render (apps, or an access cookie that expired). With a session
+        // to refresh, validateToken renews it; without one, the user is simply signed out.
+        if (isNativeTokenStorage() || hasSessionHint()) {
+          setValidating(true);
+          await validateToken();
+        }
+        setValidating(false);
       }
     };
-    getToken();
+    init();
+
+    return () => {
+      unregisterRefresh();
+      removeVisibilityRefresh();
+    };
   }, []);
 
   // update the authentication instance and the user and userAccount
@@ -199,10 +224,15 @@ function useProvideAuth(signinRoute: string = '') {
     auth,
     accessToken,
     refreshToken,
+    refreshTokenExpiresIn,
+    refreshTokenExpiresAt,
   }: {
     auth: AuthSession;
     accessToken: string;
     refreshToken: string;
+    // when the server says the refresh token expires (absent from older servers)
+    refreshTokenExpiresIn?: number;
+    refreshTokenExpiresAt?: string;
     // TODO: which better use QResult or Shape?
     // user: QResult<Person>;
     // userAccount: QResult<UserAccount>;
@@ -211,28 +241,21 @@ function useProvideAuth(signinRoute: string = '') {
     setAuthState(auth);
 
     // update the user and userAccount before render
-    setUser(auth.user);
-    setUserAccount(auth.userAccount);
+    setUser((previous) => keepIfUnchanged(previous, auth.user));
+    setUserAccount((previous) => keepIfUnchanged(previous, auth.userAccount));
 
-    // save token to storage only if provided
+    // save tokens to storage only if provided: the access cookie lives until the token's exp,
+    // the refresh cookie until the expiry the server returned (see storeAuthTokens)
+    storeAuthTokens({
+      accessToken,
+      refreshToken,
+      refreshTokenExpiresIn,
+      refreshTokenExpiresAt,
+    }).catch((err) => console.warn('@_linked/auth: could not store tokens', err));
+
     if (accessToken) {
-      setAuthToken({
-        key: ACCESS_TOKEN,
-        value: accessToken,
-        expires: ACCESS_TOKEN_EXPIRES,
-      });
-
-      Server.addDefaultHeaders({
-        Authorization: `Bearer ${accessToken}`,
-      });
-    }
-
-    if (refreshToken) {
-      setAuthToken({
-        key: REFRESH_TOKEN,
-        value: refreshToken,
-        expires: REFRESH_TOKEN_EXPIRES,
-      });
+      // sent as the Authorization header; schedules the next refresh before its exp
+      setAccessToken(accessToken);
     }
 
     return {
@@ -241,6 +264,8 @@ function useProvideAuth(signinRoute: string = '') {
       auth: auth,
       accessToken: accessToken || '',
       refreshToken: refreshToken || '',
+      ...(refreshTokenExpiresIn !== undefined ? { refreshTokenExpiresIn } : {}),
+      ...(refreshTokenExpiresAt !== undefined ? { refreshTokenExpiresAt } : {}),
     };
   };
 
@@ -257,6 +282,8 @@ function useProvideAuth(signinRoute: string = '') {
           auth: response.auth,
           accessToken: response.accessToken,
           refreshToken: response.refreshToken,
+          refreshTokenExpiresIn: response.refreshTokenExpiresIn,
+          refreshTokenExpiresAt: response.refreshTokenExpiresAt,
         });
         return;
       }
@@ -277,6 +304,8 @@ function useProvideAuth(signinRoute: string = '') {
             auth: response.auth,
             accessToken: response.accessToken,
             refreshToken: response.refreshToken,
+            refreshTokenExpiresIn: response.refreshTokenExpiresIn,
+            refreshTokenExpiresAt: response.refreshTokenExpiresAt,
           });
         } else {
           //TODO: show user feedback
@@ -307,6 +336,8 @@ function useProvideAuth(signinRoute: string = '') {
           auth: response.auth,
           accessToken: response.accessToken,
           refreshToken: response.refreshToken,
+          refreshTokenExpiresIn: response.refreshTokenExpiresIn,
+          refreshTokenExpiresAt: response.refreshTokenExpiresAt,
         });
       }
       throw new Error(response?.error || "Couldn't sign in (dev)");
@@ -327,6 +358,8 @@ function useProvideAuth(signinRoute: string = '') {
           auth: response.auth,
           accessToken: response.accessToken,
           refreshToken: response.refreshToken,
+          refreshTokenExpiresIn: response.refreshTokenExpiresIn,
+          refreshTokenExpiresAt: response.refreshTokenExpiresAt,
         });
       }
 
@@ -355,6 +388,8 @@ function useProvideAuth(signinRoute: string = '') {
           auth: response.auth,
           accessToken: response.accessToken,
           refreshToken: response.refreshToken,
+          refreshTokenExpiresIn: response.refreshTokenExpiresIn,
+          refreshTokenExpiresAt: response.refreshTokenExpiresAt,
         });
       } else {
         //TODO: show user feedback
@@ -369,11 +404,17 @@ function useProvideAuth(signinRoute: string = '') {
     setUser(null);
     setUserAccount(null);
 
-    // remove token from storage
+    // native clients pass their refresh token; browsers send the httpOnly cookie, which the
+    // server clears along with the access cookie
+    const refreshToken = isNativeTokenStorage()
+      ? await getAuthToken(REFRESH_TOKEN)
+      : undefined;
+
+    resetAuthClient();
     removeAuthToken(ACCESS_TOKEN);
     removeAuthToken(REFRESH_TOKEN);
 
-    const result = await Server.call(packageName, 'signout');
+    const result = await Server.call(packageName, 'signout', refreshToken);
     if (result) {
       // hard refresh to redirect after signout
       window.location.href = '/';
@@ -385,49 +426,94 @@ function useProvideAuth(signinRoute: string = '') {
   };
 
   /**
-   * Check the token still valid or not, need on Apps
+   * Forget the session locally (the server refused it). EVERYTHING goes: a half-signed-in state
+   * (no userAccount but still a user) makes a sign-in page that checks `user` redirect back into
+   * a RequireAuth page that checks `userAccount` — a render loop.
+   */
+  const undoSignin = async () => {
+    setAuthState(null);
+    setUser(null);
+    setUserAccount(null);
+    setValidating(false);
+    resetAuthClient();
+    removeAuthToken(ACCESS_TOKEN);
+    removeAuthToken(REFRESH_TOKEN);
+  };
+
+  /**
+   * Ask the server for the current session: it confirms a valid access token, or refreshes with
+   * the refresh token (the httpOnly cookie, or the stored token on native clients).
+   */
+  const callValidateToken = async (forceRefresh = false) => {
+    const refreshToken = isNativeTokenStorage()
+      ? await getAuthToken(REFRESH_TOKEN)
+      : undefined;
+    return Server.call(
+      packageName,
+      'validateToken',
+      refreshToken,
+      forceRefresh ? { forceRefresh: true } : undefined
+    );
+  };
+
+  /**
+   * Check whether the session is still valid (refreshing it if the access token expired).
    *
-   * @returns boolean
+   * @returns the authentication response, or false when signed out
    */
   const validateToken = async () => {
-    const storedToken = await getAuthToken(ACCESS_TOKEN);
-    const refreshToken = await getAuthToken(REFRESH_TOKEN);
-
-    //TODO: replace with already existing signout() function?
-    const undoSignin = async () => {
-      // remove userAccount and token when validate token is not valid or false
-      // need to remove userAccount for the RequireAuth to redirect to the sign-in page
-      setUserAccount(null);
-      removeAuthToken(ACCESS_TOKEN);
-      removeAuthToken(REFRESH_TOKEN);
-    };
-
-    if (storedToken) {
-      return Server.call(packageName, 'validateToken', refreshToken)
-        .then((response) => {
-          // check if response error
-          if (response.error) {
-            undoSignin();
-            return false;
-          }
-
-          return updateAuth({
-            auth: response.auth,
-            accessToken: response.accessToken,
-            refreshToken: response.refreshToken,
-          });
-        })
-        .catch((err) => {
-          return undoSignin();
-        });
-    } else {
-      return undoSignin();
+    try {
+      const response = await callValidateToken();
+      if (!response || response.error) {
+        await undoSignin();
+        return false;
+      }
+      return updateAuth({
+        auth: response.auth,
+        accessToken: response.accessToken,
+        refreshToken: response.refreshToken,
+        refreshTokenExpiresIn: response.refreshTokenExpiresIn,
+        refreshTokenExpiresAt: response.refreshTokenExpiresAt,
+      });
+    } catch (err) {
+      await undoSignin();
+      return false;
     }
   };
 
   /**
-   * get the access token from storage
-   * @returns
+   * The refresh the scheduler, the focus handler and the 401 retry run (single flight, see
+   * utils/authClient). A network error keeps the session: the next attempt may succeed.
+   */
+  const refreshSession = async (): Promise<boolean> => {
+    let response;
+    try {
+      response = await callValidateToken(true);
+    } catch (err) {
+      console.warn('@_linked/auth: could not refresh the session', err);
+      return false;
+    }
+    if (!response) {
+      // no answer (server error): keep the session, the next attempt may succeed
+      return false;
+    }
+    if (response.error || !response.accessToken) {
+      await undoSignin();
+      return false;
+    }
+    updateAuth({
+      auth: response.auth,
+      accessToken: response.accessToken,
+      refreshToken: response.refreshToken,
+      refreshTokenExpiresIn: response.refreshTokenExpiresIn,
+      refreshTokenExpiresAt: response.refreshTokenExpiresAt,
+    });
+    return true;
+  };
+
+  /**
+   * The access token held in memory (web) or storage (native). After a server-rendered page
+   * load a web client has none until its first refresh: the token is an httpOnly cookie.
    */
   const getAccessToken = async () => {
     return getAuthToken(ACCESS_TOKEN);
@@ -454,43 +540,3 @@ function useProvideAuth(signinRoute: string = '') {
     validating,
   };
 }
-/**
- * TODO: add this for better validation of tokens before they expire
- * import jwtDecode from "jwt-decode"; // or manual atob split
-
-type Claims = { exp: number; iat?: number };
-
-let refreshTimer: ReturnType<typeof setTimeout> | null = null;
-
-export function scheduleTokenRefresh(accessToken: string, refresh: () => Promise<void>) {
-  // clear any previous timer
-  if (refreshTimer) clearTimeout(refreshTimer);
-
-  const { exp } = jwtDecode<Claims>(accessToken);
-  if (!exp) return; // fallback: do nothing if missing
-
-  const now = Date.now();
-  const expMs = exp * 1000;
-  const skewMs = 30_000;          // account for clock skew (30s)
-  const bufferMs = 10 * 60_000;   // refresh 10 min early
-  const when = Math.max(0, expMs - bufferMs - skewMs - now);
-
-  refreshTimer = setTimeout(async () => {
-    try {
-      await refresh();            // your refresh-token call
-    } catch {
-      // optional: sign out or show relogin UI
-    }
-  }, when);
-}
-
-// call after login / page load / successful refresh:
-scheduleTokenRefresh(accessToken, refreshFn);
-
-// optional: reschedule when tab becomes active again
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") {
-    scheduleTokenRefresh(currentAccessToken, refreshFn);
-  }
-});
- */

@@ -1,5 +1,98 @@
 # @\_linked/auth
 
+## 3.0.0
+
+### Major Changes
+
+- [#70](https://github.com/linked-fw/auth/pull/70) [`30b5346`](https://github.com/linked-fw/auth/commit/30b5346ecfadbe476c05d7ee877811919f59536b) Thanks [@flyon](https://github.com/flyon)! - Server-set httpOnly auth cookies, a client refresh scheduler, 15-minute access tokens and session lifetime limits.
+  
+  **Breaking for browser clients**
+  
+  - The server now sets the auth cookies itself: `accessToken` (httpOnly, SameSite=Lax, Path=/, until the JWT `exp`), `refreshToken` (httpOnly, SameSite=Strict, Path=`/call/@_linked/auth`, until the stored expiry) and `linkedAuthSession` (a readable `1`, no secret). `Secure` follows `req.secure` (set Express `trust proxy` behind a TLS proxy) or an https `SITE_ROOT`. JavaScript can no longer read any auth cookie, and js-cookie is gone.
+  - Browsers no longer receive `refreshToken` in response bodies. Native clients that call `setAuthTokenStorageMethods` still do: the client then sends `x-linked-auth-transport: body`. Other non-browser clients (scripts, tests) can send that header too.
+  - `getAccessToken()` returns the access token held in memory; right after a server-rendered page load there is none until the first refresh (the page itself was authenticated by the cookie).
+  - The default access token lifetime outside development is now 15 minutes (was 10 days); development is 1 hour (was 24 hours). `AUTH_ACCESS_TOKEN_TTL` still overrides it.
+  
+  **New**
+  
+  - Refresh scheduler: refreshes about 60 s before the access token expires, and when the tab becomes visible or focused with a stale token. Concurrent refreshes share one request. A `Server.call` that gets a 401 refreshes once and is retried once (through `LincdServerProxy.setAuthHandler`; requires `@_linked/server-utils` ^1.8.0). A replaced refresh token presented within the 30 s grace window — a lost refresh response — gets a fresh refresh token instead of ending the session later. A session that ends while a tab is open clears all client auth state. `auth.user` keeps its identity across refreshes when unchanged. `ENFORCE_SIGNIN` tries one refresh before signing out.
+  - Session limits: `AUTH_SESSION_IDLE_TTL` (default 7 days without a refresh) and `AUTH_SESSION_MAX_TTL` (default 60 days after sign-in), `0` turns either off. A new optional `auth:sessionStartedAt` is stored on `RefreshToken`; older records fall back to their session's first `createdAt`.
+  - `cleanupExpiredSessions(store?, {olderThan})` deletes refresh token records revoked or expired more than 30 days ago (`AUTH_SESSION_CLEANUP_AFTER`). The backend provider runs it in the background at most once a day per process; `AUTH_SESSION_CLEANUP=false` turns that off.
+  - `validateToken(refreshToken?, {forceRefresh})`; signing out and a failed refresh clear the cookies.
+  - Cookie overrides: `AUTH_COOKIE_SECURE`, `AUTH_COOKIE_SAMESITE`, `AUTH_COOKIE_DOMAIN`, `AUTH_REFRESH_COOKIE_PATH`.
+  
+  **Migrating an app**
+  
+  - Remove any code that reads or writes the `accessToken`/`refreshToken` cookies from JavaScript; keep the server reading `request.cookies.accessToken` or, better, `request.linkedAuth`.
+  - Behind a TLS-terminating proxy, set `app.set('trust proxy', …)`.
+  - If the frontend is served from another site than the API, set `AUTH_COOKIE_SAMESITE=none`.
+  - Users stay signed in: a refresh cookie written by the previous client on `/` is still accepted once and replaced by the scoped one.
+
+## 2.0.1
+
+### Patch Changes
+
+- [#68](https://github.com/linked-fw/auth/pull/68) [`5c4c2de`](https://github.com/linked-fw/auth/commit/5c4c2de781316b190b114384b884dd722bd6f1da) Thanks [@flyon](https://github.com/flyon)! - - A missing `JWT_SECRET` / `SESSION_SECRET` outside development/test now throws a `FatalConfigError`
+    (`fatal: true`). @_linked/server releases that honour `fatal` abort startup on it instead of
+    logging the failed provider hook and serving with broken auth.
+  - Token responses (every sign-in, `validateToken`, `updateSessionData`) now carry
+    `refreshTokenExpiresIn` (seconds) and `refreshTokenExpiresAt` (ISO) for the refresh token they
+    return. The client sizes the refresh cookie from them, so it no longer outlives the server's
+    record when `AUTH_REFRESH_TOKEN_TTL` is shorter than the client default; the access cookie keeps
+    following the JWT `exp`. Without these fields (older servers) the client falls back to its
+    defaults, and leaves an unchanged echoed refresh token alone instead of extending it.
+    New export `storeAuthTokens` in `utils/token`.
+  - A non-JWT value presented as an access token (typically the opaque refresh token) is no longer
+    logged; other rejected tokens (bad signature, wrong audience or kind) are logged once per token.
+
+## 2.0.0
+
+### Major Changes
+
+- [#66](https://github.com/linked-fw/auth/pull/66) [`58a8b34`](https://github.com/linked-fw/auth/commit/58a8b34752913d47e4b4d7ad0dda5c9b072d0e92) Thanks [@flyon](https://github.com/flyon)! - Auth's ontology moves from `http://lincd.org/ont/auth/` to `https://linked.cm/ont/auth/`, the first-party scheme every public package uses (`https://linked.cm/ont/{publicSlug}/`, next to its shapes at `https://linked.cm/shape/auth/`).
+  
+  **Breaking — stored auth data must be migrated.** Every auth class and property changed IRI. Credentials, refresh token records and the synced shape descriptions written by 1.x are invisible to this release until they are rewritten: sign-in answers "No password found for this email". Nothing is deleted. Run the migration once per dataset that auth shapes are stored in, right after deploying:
+  
+  ```ts
+  import { migrateAuthNamespace } from '@_linked/auth/utils/migrateNamespace';
+  await migrateAuthNamespace(store, { dryRun: true }); // counts only
+  await migrateAuthNamespace(store); // { before: N, after: 0, dryRun: false }
+  ```
+  
+  - `migrateAuthNamespace(dataset, {dryRun?})` rewrites every IRI under the legacy namespace (subject, predicate and object, default graph and every named graph) in one SPARQL UPDATE request. Literals are untouched. It is idempotent. `dataset` is any store with `rawQuery` (e.g. `FusekiStore`), not a dataset router.
+  - `hasLegacyAuthData(dataset)` is a cheap boot-time check for records the migration has not reached; `countLegacyAuthTriples(dataset)` counts everything left.
+  - The ontology terms (`auth.AuthCredential`, `auth.passwordHash`, …) keep their names; only their IRIs change. Code that hard-codes `http://lincd.org/ont/auth/` in SPARQL must be updated.
+  - `RefreshToken`: `tokenHash`, `sessionId`, `account`, `createdAt` and `expiresAt` are now required, so creating a record without them is refused instead of storing a token that can never match or expire. The session store reads and writes the records through the typed query DSL without casts.
+
+## 1.7.0
+
+### Minor Changes
+
+- [#64](https://github.com/linked-fw/auth/pull/64) [`8966cf5`](https://github.com/linked-fw/auth/commit/8966cf5a29e86aaffd17861662b4e0e28bd57e9b) Thanks [@flyon](https://github.com/flyon)! - Token security: refresh tokens can no longer be used as access tokens, and refresh now actually works.
+  
+  - **Access tokens are typed.** They carry `typ: 'access'`, `aud` (SITE_ROOT), `sid` (session) and `jti`. Every access check — the request middleware, `verifyToken`, `validateToken` — accepts only access tokens for the right audience. Previously a refresh token (a 60-day JWT) was accepted as a login. Access tokens issued by earlier releases keep working until they expire (they carry `aud`); earlier refresh tokens (no `aud`) are refused.
+  - **New `verifyAccessToken(token, {audience?})`** in `@_linked/auth/utils/jwt`. Apps that verify tokens themselves should use it instead of `jwt.verify`.
+  - **Refresh tokens are stored, hashed and rotated.** A refresh token is now an opaque random value; only its SHA-256 hash is stored, as a `RefreshToken` shape (new properties: `tokenHash`, `sessionId`, `createdAt`, `lastUsedAt`, `expiresAt`, `revokedAt`, `replacedBy`; the raw-token `token` property is gone). `validateToken` exchanges it for new tokens and rotates it; presenting a replaced token again revokes the whole session (a 30-second grace covers concurrent tabs). Sign-out revokes the session, a password reset revokes every session of the account, and removing an account deletes its records. The request middleware no longer refreshes.
+  - **Behaviour change — refresh tokens issued by earlier releases are invalid** (they were never stored, so they cannot be checked). Users sign in again when their current access token expires, which is also what happened before: refresh never succeeded.
+  - **Behaviour change — the server refuses to start without `JWT_SECRET` and `SESSION_SECRET`** unless `NODE_ENV` is `development` or `test` (an unset NODE_ENV and `staging` count as production). Generate them with `openssl rand -base64 48`. Development keeps the old fallbacks and warns.
+  - Lifetimes are configurable with `AUTH_ACCESS_TOKEN_TTL` / `AUTH_REFRESH_TOKEN_TTL` (seconds); defaults are unchanged.
+  - The token verification cache now drops an entry at the token's own expiry (it served expired tokens before) and is bounded.
+  - Client: cookies get the right lifetime (seconds were passed to js-cookie as days); the access cookie expires with the token; `validateToken` refreshes with the refresh token alone once the access token is gone; `signout` sends the refresh token so the server can revoke the session.
+  - Removed `RefreshToken.removeRefreshToken` and `RefreshToken.getRefreshTokenForAccount` (they matched on a raw token that was never stored); use `revokeSession`, `revokeAllSessionsForAccount` and `deleteAllSessionsForAccount` from `@_linked/auth/utils/sessions`.
+  - `removeAccount` deletes the credential, account and person by reference (it passed whole query results to `delete`, which rejected them).
+
+## 1.6.5
+
+### Patch Changes
+
+- [#58](https://github.com/linked-fw/auth/pull/58) [`514ea33`](https://github.com/linked-fw/auth/commit/514ea330ec55865081c90137440ba2070a0badb9) Thanks [@renovate](https://github.com/apps/renovate)! - Drop the unused `chalk` dependency. Nothing in the package imported it.
+
+## 1.6.4
+
+### Patch Changes
+
+- [#57](https://github.com/linked-fw/auth/pull/57) [`c4f4a7e`](https://github.com/linked-fw/auth/commit/c4f4a7e5d5c38c8ada78de013cfade47d65fa31c) Thanks [@renovate](https://github.com/apps/renovate)! - Upgrade bcrypt to 6. It ships prebuilt N-API binaries for linux (glibc and musl, x64/arm64/arm), macOS and Windows inside the package, so installing no longer downloads a binary from GitHub or falls back to a node-gyp compile. Requires Node 18 or newer. Existing password hashes keep verifying — a test pins hashes produced by bcrypt 5 against the built helper.
+
 ## 1.6.3
 
 ### Patch Changes
