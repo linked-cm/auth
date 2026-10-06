@@ -9,7 +9,7 @@ import PasswordHelper from '../lib/esm/helpers/password.js';
 const BCRYPT_5_HASHES = [
   {
     password: 'correct horse battery staple',
-    // generateHashedPassword uses 3 rounds; bcrypt clamps that to the minimum of 4.
+    // A historical hash using bcrypt's minimum cost remains supported.
     hash: '$2b$04$eye1NrzS0IIvhvF2J5vUSev86XW.nY.Hn/2cnBV/0ecIMgys8pvGC',
   },
   {
@@ -35,11 +35,27 @@ for (const {password, hash} of BCRYPT_5_HASHES) {
 
 test('a new hash has the $2b$ format and round-trips', async () => {
   const hash = await PasswordHelper.generateHashedPassword('s3cret');
-  assert.match(hash, /^\$2b\$04\$[./A-Za-z0-9]{53}$/);
+  assert.match(hash, /^\$2b\$12\$[./A-Za-z0-9]{53}$/);
   assert.equal(await PasswordHelper.checkPassword('s3cret', hash), true);
   assert.equal(await PasswordHelper.checkPassword('S3cret', hash), false);
 });
 
 test('a malformed stored hash fails closed instead of throwing', async () => {
   assert.equal(await PasswordHelper.checkPassword('s3cret', 'not-a-hash'), false);
+});
+
+test('password sign-in can match a later duplicate credential', async () => {
+  const credentials = [
+    { id: 'old', passwordHash: BCRYPT_5_HASHES[0].hash },
+    { id: 'current', passwordHash: BCRYPT_5_HASHES[3].hash },
+  ];
+
+  assert.equal(
+    await PasswordHelper.findMatchingCredential('legacy-2a', credentials),
+    credentials[1]
+  );
+  assert.equal(
+    await PasswordHelper.findMatchingCredential('not-the-password', credentials),
+    null
+  );
 });

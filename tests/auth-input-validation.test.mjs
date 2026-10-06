@@ -9,6 +9,15 @@ import {
   isAcceptableNewPassword,
   isCheckablePassword,
 } from '../lib/esm/utils/password-policy.js';
+import { getOwnCallableLevel } from '@_linked/server-utils/utils/callable';
+import AuthBackendProvider from '../lib/esm/backend.js';
+
+test('password sign-in is explicitly exposed as a public RPC', () => {
+  assert.equal(
+    getOwnCallableLevel(AuthBackendProvider, 'signinWithPassword'),
+    'public'
+  );
+});
 
 test('OAuth provider runtime guard accepts only supported providers', () => {
   assert.deepEqual(OAUTH_PROVIDERS, ['facebook', 'google', 'apple']);

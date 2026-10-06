@@ -54,6 +54,26 @@ const PasswordHelper = {
   },
 
   /**
+   * Return the credential matching the supplied password. Imported accounts
+   * can legitimately contain multiple historical credential rows, whose
+   * query order is not stable.
+   */
+  async findMatchingCredential<T extends { passwordHash?: string }>(
+    enteredPassword: string,
+    credentials: T[]
+  ): Promise<T | null> {
+    for (const credential of credentials) {
+      if (
+        credential.passwordHash &&
+        (await this.checkPassword(enteredPassword, credential.passwordHash))
+      ) {
+        return credential;
+      }
+    }
+    return null;
+  },
+
+  /**
    * Validate the reset password token
    *
    * @param token - The reset password token

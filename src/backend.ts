@@ -2,6 +2,7 @@ import { Person as SchemaPerson } from '@_linked/schema/shapes/Person';
 import type { Shape } from '@_linked/core/shapes/Shape';
 import { UserAccount } from '@_linked/sioc/shapes/UserAccount';
 import { BackendProvider } from '@_linked/server-utils/utils/BackendProvider';
+import { callable } from '@_linked/server-utils/utils/callable';
 import session from 'express-session';
 
 import { Auth } from './utils/auth.js';
@@ -452,6 +453,7 @@ export default class AuthBackendProvider extends BackendProvider {
    * @param plainPassword - The plain password
    * @returns
    */
+  @callable('public')
   async signinWithPassword(
     email: string,
     plainPassword: string
@@ -475,11 +477,12 @@ export default class AuthBackendProvider extends BackendProvider {
       };
     }
 
-    // find any passwords for accounts with this email
-    // and select the hash and account/person details
-    let existingCredential = await this.getPasswordForUser({ id: webID });
+    // A person can have more than one credential after legacy imports or
+    // OAuth linking. Keep every password-bearing row so a valid password is
+    // not rejected merely because the graph returned another row first.
+    let accountCredentials = await this.getPasswordsForUser({ id: webID });
 
-    if (!existingCredential) {
+    if (accountCredentials.length === 0) {
       console.warn(
         `Could not find any password associated with this email: ${email}, so we will check by user email`
       );
@@ -500,7 +503,7 @@ export default class AuthBackendProvider extends BackendProvider {
         };
       }
 
-      const accountCredentials = await AuthCredential.select((ac) => {
+      accountCredentials = await AuthCredential.select((ac) => {
         return [
           ac.passwordHash,
           ac.credentialOf.select((p) => {
@@ -511,25 +514,23 @@ export default class AuthBackendProvider extends BackendProvider {
         return ac.credentialOf.equals({ id: account.accountOf.id });
       });
 
-      // OAuth and legacy flows can leave more than one credential row on a
-      // person. Select the row that actually contains a password hash.
-      existingCredential = accountCredentials.find((credential) =>
+      accountCredentials = accountCredentials.filter((credential) =>
         Boolean(credential.passwordHash)
       );
 
-      if (!existingCredential) {
+      if (accountCredentials.length === 0) {
         return {
           error: 'No password found for this email',
         };
       }
     }
 
-    const passwordIsValid = await PasswordHelper.checkPassword(
+    const existingCredential = await PasswordHelper.findMatchingCredential(
       plainPassword,
-      existingCredential.passwordHash
+      accountCredentials
     );
 
-    if (!passwordIsValid) {
+    if (!existingCredential) {
       return {
         error: 'Invalid email / password combination',
       };
@@ -675,6 +676,19 @@ export default class AuthBackendProvider extends BackendProvider {
    * @returns The password (AuthCredential)
    */
   async getPasswordForUser(user: QResult<Person>) {
+    const credentials = await this.getPasswordsForUser(user);
+    const credential = credentials[0];
+
+    if (!credential) {
+      console.warn(`Could not find any password for account ${user.id}`);
+      return null;
+    }
+
+    return credential;
+  }
+
+  /** Return every password-bearing credential linked to a user. */
+  async getPasswordsForUser(user: QResult<Person>) {
     const credentials = await AuthCredential.select((cred) => {
       return [
         cred.passwordHash,
@@ -686,16 +700,9 @@ export default class AuthBackendProvider extends BackendProvider {
       return cred.credentialOf.equals({ id: user.id });
     });
 
-    const credential = credentials.find((candidate) =>
+    return credentials.filter((candidate) =>
       Boolean(candidate.passwordHash)
     );
-
-    if (!credential) {
-      console.warn(`Could not find any password for account ${user.id}`);
-      return null;
-    }
-
-    return credential;
   }
   /**
    * Reset the password
