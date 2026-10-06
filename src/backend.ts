@@ -2,7 +2,7 @@ import { Person as SchemaPerson } from '@_linked/schema/shapes/Person';
 import type { Shape } from '@_linked/core/shapes/Shape';
 import { UserAccount } from '@_linked/sioc/shapes/UserAccount';
 import { BackendProvider } from '@_linked/server-utils/utils/BackendProvider';
-import { callable } from '@_linked/server-utils/utils/callable';
+import { callable, internal } from '@_linked/server-utils/utils/callable';
 import session from 'express-session';
 
 import { Auth } from './utils/auth.js';
@@ -383,6 +383,7 @@ export default class AuthBackendProvider extends BackendProvider {
    *
    * @returns the access token if it is valid, otherwise null
    */
+  @internal()
   async validateRequestToken(request, _accessTokenExpired: boolean = false) {
     // the Bearer header first, then the `accessToken` cookie (see getTokenCandidates)
     for (const token of this.getTokenCandidates(request)) {
@@ -422,6 +423,7 @@ export default class AuthBackendProvider extends BackendProvider {
   }
 
   // TODO: check possible to remove this method?
+  @internal()
   checkSignin() {
     //this is a temporary fix that allows the frontend to check if the user is still logged in on the backend
     return this.request.linkedAuth?.userAccount;
@@ -549,6 +551,7 @@ export default class AuthBackendProvider extends BackendProvider {
    * @param CreateAccount - The account data to create
    * @returns
    */
+  @callable('public')
   async createAccount({
     firstName,
     lastName,
@@ -675,6 +678,7 @@ export default class AuthBackendProvider extends BackendProvider {
    * @param user - The user
    * @returns The password (AuthCredential)
    */
+  @internal()
   async getPasswordForUser(user: QResult<Person>) {
     const credentials = await this.getPasswordsForUser(user);
     const credential = credentials[0];
@@ -688,6 +692,7 @@ export default class AuthBackendProvider extends BackendProvider {
   }
 
   /** Return every password-bearing credential linked to a user. */
+  @internal()
   async getPasswordsForUser(user: QResult<Person>) {
     const credentials = await AuthCredential.select((cred) => {
       return [
@@ -712,6 +717,7 @@ export default class AuthBackendProvider extends BackendProvider {
    * @param token - The reset password token
    * @returns
    */
+  @callable('public')
   async resetPassword(
     password: string,
     confirmPassword: string,
@@ -792,6 +798,7 @@ export default class AuthBackendProvider extends BackendProvider {
     return Auth.onSigninSuccessful(this, person, account);
   }
 
+  @internal()
   async getOrCreateAccount(user: QResult<Person>) {
     //get or create account
     let account = await this.accountShape
@@ -817,6 +824,7 @@ export default class AuthBackendProvider extends BackendProvider {
    * @param email - The email address
    * @returns
    */
+  @callable('public')
   async sendResetPasswordLink(email: string) {
     const newToken = PasswordHelper.generateToken();
     const normalizedEmail = email.toLowerCase();
@@ -949,6 +957,7 @@ export default class AuthBackendProvider extends BackendProvider {
    * @param oauthUserData - The provider credential (token) plus, for Apple,
    *   the name the client received on first consent
    */
+  @callable('public')
   async signinOAuth<Provider extends OAuthProvider>(
     provider: Provider,
     oauthUserData: OAuthPayloadMap[Provider]
@@ -1122,6 +1131,7 @@ export default class AuthBackendProvider extends BackendProvider {
    * token proves ownership of the provider identity. `signinOAuth` refuses to
    * do this by email on its own (`action: 'sign_in_to_link'`) and points here.
    */
+  @callable('user')
   async linkOAuthIdentity<Provider extends OAuthProvider>(
     provider: Provider,
     oauthUserData: OAuthPayloadMap[Provider]
@@ -1168,6 +1178,7 @@ export default class AuthBackendProvider extends BackendProvider {
    *
    * @returns
    */
+  @callable('public')
   async signinTemporary() {
     const person = await (this.userShape as any)
       .create({
@@ -1212,6 +1223,7 @@ export default class AuthBackendProvider extends BackendProvider {
    * the frontend in a follow-up Server.call to avoid coupling @_linked/auth
    * to CN-specific shapes.
    */
+  @callable('public')
   async signinDev(input: {
     webId: string;
     accessToken: string;
@@ -1256,6 +1268,7 @@ export default class AuthBackendProvider extends BackendProvider {
     return Auth.onSigninSuccessful(this, person, account as UserAccountData);
   }
 
+  @callable('user')
   async removeAccount() {
     const auth = this.request.linkedAuth;
     if (!auth) {
@@ -1300,6 +1313,7 @@ export default class AuthBackendProvider extends BackendProvider {
    * @param refreshToken - Optional refresh token of the session to end
    * @returns true if the user was signed in or a session was revoked
    */
+  @callable('public')
   async signout(refreshToken?: string): Promise<boolean> {
     const request = this.request;
     const response = this.response;
@@ -1345,6 +1359,7 @@ export default class AuthBackendProvider extends BackendProvider {
    *   scheduler does this shortly before `exp`)
    * @returns A promise that resolves to an authentication result
    */
+  @callable('public')
   async validateToken(
     refreshToken?: string,
     options: { forceRefresh?: boolean } = {}
@@ -1497,6 +1512,7 @@ export default class AuthBackendProvider extends BackendProvider {
    * Gets the access token from the request: the Bearer header, else the `accessToken` cookie.
    * @protected
    */
+  @internal()
   protected getTokenFromRequest(req: Request) {
     return this.getTokenCandidates(req)[0] ?? null;
   }
@@ -1507,6 +1523,7 @@ export default class AuthBackendProvider extends BackendProvider {
    * memory (sent as the header) while the httpOnly cookie was already renewed by another tab.
    * @protected
    */
+  @internal()
   protected getTokenCandidates(req: Request): string[] {
     const tokens: string[] = [];
     const header = req?.headers?.authorization;
@@ -1521,6 +1538,7 @@ export default class AuthBackendProvider extends BackendProvider {
   }
 
   // get refresh token from request (the httpOnly cookie)
+  @internal()
   protected getRefreshTokenFromRequest(req: Request) {
     return (req as any)?.cookies && (req as any).cookies.refreshToken;
   }

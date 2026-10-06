@@ -3,6 +3,7 @@ import { AuthCredential } from './AuthCredential.js';
 import PasswordHelper from '../helpers/password.js';
 import { QResult } from '@_linked/core/queries/SelectQuery';
 import { Person } from '@_linked/schema/shapes/Person';
+import { callable, internal } from '@_linked/server-utils/utils/callable';
 
 export class AuthCredentialProvider extends ShapeProvider {
   public shape = AuthCredential;
@@ -11,6 +12,7 @@ export class AuthCredentialProvider extends ShapeProvider {
    * Returns true if the user has a password stored in the database
    * That means, they are able to login with email and password
    */
+  @callable('user')
   async userHasAuthCredential() {
     const user: QResult<Person> = this.request?.linkedAuth?.user;
     if (!user) {
@@ -19,6 +21,7 @@ export class AuthCredentialProvider extends ShapeProvider {
     }
     return this.hasAuthCredential(user);
   }
+  @internal()
   async hasAuthCredential(person: QResult<Person>) {
     const credential = await AuthCredential.select()
       .where((p) => p.credentialOf.equals({ id: person.id }))
@@ -31,6 +34,7 @@ export class AuthCredentialProvider extends ShapeProvider {
    * Returns true if the current signed-in user has a stored password hash.
    * This is the correct check for whether email/password login is available.
    */
+  @callable('user')
   async userHasPassword() {
     const user: QResult<Person> = this.request?.linkedAuth?.user;
     if (!user) {
@@ -44,6 +48,7 @@ export class AuthCredentialProvider extends ShapeProvider {
    * Returns true if the given person has an AuthCredential with a password hash.
    * This intentionally ignores credential rows created for OAuth-only users.
    */
+  @internal()
   async hasPassword(person: QResult<Person>) {
     const credentials = await AuthCredential.select((cred) => {
       return [cred.passwordHash];
@@ -59,6 +64,7 @@ export class AuthCredentialProvider extends ShapeProvider {
    * @param user
    * @returns
    */
+  @internal()
   async createNewCredential(email, password: string, user: QResult<Person>) {
     if (!password || !(typeof password === 'string')) {
       throw new Error('Password must be a string');

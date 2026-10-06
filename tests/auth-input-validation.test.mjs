@@ -9,14 +9,55 @@ import {
   isAcceptableNewPassword,
   isCheckablePassword,
 } from '../lib/esm/utils/password-policy.js';
-import { getOwnCallableLevel } from '@_linked/server-utils/utils/callable';
+import {
+  getOwnCallableLevel,
+  isDeclaredInternal,
+} from '@_linked/server-utils/utils/callable';
 import AuthBackendProvider from '../lib/esm/backend.js';
+import { AuthCredentialProvider } from '../lib/esm/shapes/AuthCredentialProvider.js';
 
-test('password sign-in is explicitly exposed as a public RPC', () => {
-  assert.equal(
-    getOwnCallableLevel(AuthBackendProvider, 'signinWithPassword'),
-    'public'
-  );
+test('client-facing auth RPCs declare their required exposure', () => {
+  for (const method of [
+    'createAccount',
+    'resetPassword',
+    'sendResetPasswordLink',
+    'signinDev',
+    'signinOAuth',
+    'signinTemporary',
+    'signinWithPassword',
+    'signout',
+    'validateToken',
+  ]) {
+    assert.equal(getOwnCallableLevel(AuthBackendProvider, method), 'public', method);
+  }
+  for (const method of ['linkOAuthIdentity', 'removeAccount']) {
+    assert.equal(getOwnCallableLevel(AuthBackendProvider, method), 'user', method);
+  }
+  for (const method of ['userHasAuthCredential', 'userHasPassword']) {
+    assert.equal(getOwnCallableLevel(AuthCredentialProvider, method), 'user', method);
+  }
+});
+
+test('auth implementation helpers are never exposed over RPC', () => {
+  for (const method of [
+    'checkSignin',
+    'getOrCreateAccount',
+    'getPasswordForUser',
+    'getPasswordsForUser',
+    'getRefreshTokenFromRequest',
+    'getTokenCandidates',
+    'getTokenFromRequest',
+    'validateRequestToken',
+  ]) {
+    assert.equal(isDeclaredInternal(AuthBackendProvider, method), true, method);
+  }
+  for (const method of [
+    'createNewCredential',
+    'hasAuthCredential',
+    'hasPassword',
+  ]) {
+    assert.equal(isDeclaredInternal(AuthCredentialProvider, method), true, method);
+  }
 });
 
 test('OAuth provider runtime guard accepts only supported providers', () => {
