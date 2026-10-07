@@ -41,20 +41,39 @@ Call `setAuthTokenStorageMethods(get, set, remove)` (from `@_linked/auth/utils/t
 
 2.0 moves auth's ontology from `http://lincd.org/ont/auth/` to `https://linked.cm/ont/auth/`. Every auth class and property changed IRI, so credentials, refresh tokens and the synced shape descriptions written by 1.x are **invisible** to 2.0 until they are rewritten: sign-in answers "No password found for this email". Nothing is lost; the data just has to be migrated once per dataset that auth shapes are stored in (wherever your storage config routes `AuthCredential`, `RefreshToken`, `Password`, `IdentityToken` and `Authentication`).
 
-```ts
-import {
-  migrateAuthNamespace,
-  hasLegacyAuthData,
-} from '@_linked/auth/utils/migrateNamespace';
+Build the Auth checkout, then use its migration command. It requires an explicit mode and a full
+dataset endpoint; it never selects or modifies a dataset implicitly.
 
-// `store` is the dataset itself (e.g. the FusekiStore), not a dataset router.
-console.log(await migrateAuthNamespace(store, { dryRun: true })); // { before: N, after: N, ... }
-console.log(await migrateAuthNamespace(store)); // { before: N, after: 0, dryRun: false }
+```bash
+npm run build
+
+export FUSEKI_URL='http://localhost:3030/pg-main'
+export FUSEKI_USER='admin'
+read -s FUSEKI_PASSWORD
+export FUSEKI_PASSWORD
+
+npm run migrate:namespace -- --dry-run
+npm run migrate:namespace -- --apply
+npm run migrate:namespace -- --dry-run
+
+unset FUSEKI_URL FUSEKI_USER FUSEKI_PASSWORD
 ```
 
-1. Back up the dataset.
-2. Deploy 2.0 and run `migrateAuthNamespace(store)` against each dataset holding auth data, from a one-off script or a deploy step. Users cannot sign in between the deploy and the migration, so run it straight away.
-3. Check that `after` is `0`. Running it again is harmless: it reports `before: 0` and changes nothing.
+1. Stop application writes and make a verified backup of the exact dataset in `FUSEKI_URL`.
+2. Run `--dry-run`. Its `before` value counts triples containing legacy Auth IRIs, not accounts.
+3. Run `--apply` once.
+4. Run `--dry-run` again and require `{ "before": 0, "after": 0, "dryRun": true }`.
+5. Restart the application and smoke-test password sign-in, refresh and sign-out.
+
+Run this sequence separately for every dataset that stores Auth data. `--apply` is idempotent:
+after a completed migration it reports zero and changes nothing. The command requires
+`@_linked/fuseki`, which is present in an Auth development checkout; a deployed application that
+invokes the packaged script must also install it.
+
+Applications that need programmatic control can still import `migrateAuthNamespace`,
+`hasLegacyAuthData` and `countLegacyAuthTriples` from
+`@_linked/auth/utils/migrateNamespace`. Pass the dataset itself (for example a `FusekiStore`), not
+a dataset router.
 
 The migration rewrites every IRI starting with the legacy namespace, in subject, predicate and object position, in the default graph and every named graph, in one SPARQL UPDATE request (one transaction on Fuseki). Literals are left alone.
 
