@@ -42,6 +42,7 @@ const { LinkedStorage } = await import('@_linked/core/utils/LinkedStorage');
 await import(new URL('shapes/index.js', libDir));
 const { default: AuthBackendProvider } = await import(new URL('backend.js', libDir));
 const migration = await import(new URL('utils/migrateNamespace.js', libDir));
+const { runInHttpContext } = await import('@_linked/server-utils/utils/CallContext');
 
 let store;
 
@@ -63,8 +64,14 @@ async function sparql(query) {
 function provider(request = { headers: {}, cookies: {} }) {
   request.headers = { 'x-linked-auth-transport': 'body', ...request.headers };
   const p = new AuthBackendProvider(null, { callGenericBackendProvidersMethod: async () => {} });
-  p.request = request;
-  return p;
+  return new Proxy(p, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === 'function'
+        ? (...args) => runInHttpContext(request, request.res, () => value.apply(target, args))
+        : value;
+    },
+  });
 }
 
 before(async () => {

@@ -41,6 +41,7 @@ const { LinkedStorage } = await import('@_linked/core/utils/LinkedStorage');
 await import(new URL('shapes/index.js', libDir));
 const sessions = await import(new URL('utils/sessions.js', libDir));
 const { default: AuthBackendProvider } = await import(new URL('backend.js', libDir));
+const { runInHttpContext } = await import('@_linked/server-utils/utils/CallContext');
 
 const fakeLincdServer = { callGenericBackendProvidersMethod: async () => {} };
 
@@ -93,8 +94,14 @@ function provider(request = { headers: {}, cookies: {} }) {
     request.headers = { 'x-linked-auth-transport': 'body', ...request.headers };
   }
   const p = new AuthBackendProvider(null, fakeLincdServer);
-  p.request = request;
-  return p;
+  return new Proxy(p, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === 'function'
+        ? (...args) => runInHttpContext(request, request.res, () => value.apply(target, args))
+        : value;
+    },
+  });
 }
 
 /** An access token for the same claims that has already expired. */
@@ -294,7 +301,6 @@ function browserProvider(cookies = {}) {
   const response = recordingResponse();
   request.res = response;
   const p = provider(request);
-  p.response = response;
   return { p, request, response };
 }
 

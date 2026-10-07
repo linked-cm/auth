@@ -30,6 +30,7 @@ const jwtUtils = await import(new URL('utils/jwt.js', libDir));
 const { Auth } = await import(new URL('utils/auth.js', libDir));
 const { default: AuthBackendProvider } = await import(new URL('backend.js', libDir));
 const sessions = await import(new URL('utils/sessions.js', libDir)).catch(() => null);
+const { runInHttpContext } = await import('@_linked/server-utils/utils/CallContext');
 
 const PERSON = { id: 'https://id.test/person/ada' };
 const ACCOUNT = { id: 'https://app.test/account/ada', email: 'ada@example.test', accountOf: PERSON };
@@ -61,10 +62,13 @@ function newApp() {
  */
 const BODY_TRANSPORT = { 'x-linked-auth-transport': 'body' };
 
-function newProvider(request = { headers: { ...BODY_TRANSPORT }, cookies: {} }) {
+function withProvider(
+  request = { headers: { ...BODY_TRANSPORT }, cookies: {} },
+  callback,
+  response
+) {
   const provider = new TestProvider(null, fakeLincdServer);
-  provider.request = request;
-  return provider;
+  return runInHttpContext(request, response, () => callback(provider));
 }
 
 function requestWith({ bearer, cookies = {} } = {}) {
@@ -76,8 +80,9 @@ function requestWith({ bearer, cookies = {} } = {}) {
 
 /** Sign in the way every sign-in method ends: Auth.onSigninSuccessful. */
 async function signin() {
-  const provider = newProvider();
-  const result = await Auth.onSigninSuccessful(provider, { ...PERSON }, { ...ACCOUNT });
+  const result = await withProvider(undefined, (provider) =>
+    Auth.onSigninSuccessful(provider, { ...PERSON }, { ...ACCOUNT })
+  );
   assert.ok(result.accessToken, 'sign-in returns an access token');
   assert.ok(result.refreshToken, 'sign-in returns a refresh token');
   return result;
@@ -85,7 +90,7 @@ async function signin() {
 
 /** What the client does when its access token is gone: validateToken with the refresh token. */
 async function refresh(refreshToken) {
-  return newProvider(requestWith()).validateToken(refreshToken);
+  return withProvider(requestWith(), (provider) => provider.validateToken(refreshToken));
 }
 
 /** A token exactly as releases before token kinds signed them. */
@@ -236,8 +241,9 @@ test('an expired access token plus a refresh token refreshes (the client contrac
     SECRET,
     { audience: SITE_ROOT }
   );
-  const result = await newProvider(requestWith({ bearer: expiredAccess })).validateToken(
-    first.refreshToken
+  const result = await withProvider(
+    requestWith({ bearer: expiredAccess }),
+    (provider) => provider.validateToken(first.refreshToken)
   );
   assert.equal(result.error, undefined, `refresh failed: ${result.error}`);
   assert.ok(jwtUtils.verifyAccessToken(result.accessToken));
@@ -301,9 +307,10 @@ test('signout revokes the session: its refresh token fails afterwards, other ses
 
   // signed in on device A, the way the request middleware sets it up
   const request = requestWith({ bearer: deviceA.accessToken });
-  const provider = newProvider(request);
-  await provider.validateRequestToken(request);
-  assert.equal(await provider.signout(), true);
+  await withProvider(request, async (provider) => {
+    await provider.validateRequestToken(request);
+    assert.equal(await provider.signout(), true);
+  });
 
   const refreshA = await refresh(deviceA.refreshToken);
   assert.ok(refreshA.error, 'device A cannot refresh after signing out');
@@ -313,8 +320,10 @@ test('signout revokes the session: its refresh token fails afterwards, other ses
 
 test('signout with only the refresh token (expired access token) revokes that session', async () => {
   const device = await signin();
-  const provider = newProvider(requestWith());
-  assert.equal(await provider.signout(device.refreshToken), true);
+  assert.equal(
+    await withProvider(requestWith(), (provider) => provider.signout(device.refreshToken)),
+    true
+  );
   assert.ok((await refresh(device.refreshToken)).error);
 });
 
@@ -343,10 +352,11 @@ test('updateSessionData keeps the session and the client refresh token', async (
     bearer: first.accessToken,
     cookies: { refreshToken: first.refreshToken },
   });
-  const provider = newProvider(request);
-  await provider.validateRequestToken(request);
-  const updated = await request.linkedAuth.updateSessionData({
-    user: { givenName: 'Ada L.' },
+  const updated = await withProvider(request, async (provider) => {
+    await provider.validateRequestToken(request);
+    return request.linkedAuth.updateSessionData({
+      user: { givenName: 'Ada L.' },
+    });
   });
   const claims = jwtUtils.verifyAccessToken(updated.accessToken);
   assert.ok(claims, 'a valid access token');
@@ -365,11 +375,12 @@ test('the verification cache does not serve an expired token', async () => {
     expiresIn: 2,
     audience: SITE_ROOT,
   });
-  const provider = newProvider();
-  const args = { request: provider.request, token, provider };
-  assert.ok(await jwtUtils.verifyToken(args), 'valid while fresh (and now cached)');
-  mock.timers.tick(3_000);
-  assert.equal(await jwtUtils.verifyToken(args), false, 'expired, even though it was cached');
+  await withProvider(undefined, async (provider) => {
+    const args = { request: provider.request, token, provider };
+    assert.ok(await jwtUtils.verifyToken(args), 'valid while fresh (and now cached)');
+    mock.timers.tick(3_000);
+    assert.equal(await jwtUtils.verifyToken(args), false, 'expired, even though it was cached');
+  });
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -473,8 +484,9 @@ test('validateToken with a valid access token returns the expiry of the echoed r
   mock.timers.enable({ apis: ['Date'], now: Date.now() });
   const first = await signin();
   mock.timers.tick(60_000);
-  const result = await newProvider(requestWith({ bearer: first.accessToken })).validateToken(
-    first.refreshToken
+  const result = await withProvider(
+    requestWith({ bearer: first.accessToken }),
+    (provider) => provider.validateToken(first.refreshToken)
   );
   assert.equal(result.error, undefined);
   assert.equal(result.refreshToken, first.refreshToken);
@@ -484,8 +496,9 @@ test('validateToken with a valid access token returns the expiry of the echoed r
 
 test('validateToken does not vouch for an unknown refresh token', async () => {
   const first = await signin();
-  const result = await newProvider(requestWith({ bearer: first.accessToken })).validateToken(
-    legacyToken('refresh')
+  const result = await withProvider(
+    requestWith({ bearer: first.accessToken }),
+    (provider) => provider.validateToken(legacyToken('refresh'))
   );
   assert.equal(result.error, undefined);
   assert.equal(result.refreshTokenExpiresIn, undefined);
