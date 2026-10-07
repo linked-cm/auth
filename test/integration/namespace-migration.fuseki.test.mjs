@@ -11,6 +11,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import { serving } from '../serving.mjs';
 
 const FUSEKI = process.env.AUTH_TEST_FUSEKI_URL?.replace(/\/+$/, '');
 const USER = process.env.AUTH_TEST_FUSEKI_USER;
@@ -62,9 +63,10 @@ async function sparql(query) {
 // The native token contract (refresh token in the response body); browsers get it as a cookie.
 function provider(request = { headers: {}, cookies: {} }) {
   request.headers = { 'x-linked-auth-transport': 'body', ...request.headers };
-  const p = new AuthBackendProvider(null, { callGenericBackendProvidersMethod: async () => {} });
-  p.request = request;
-  return p;
+  return serving(
+    new AuthBackendProvider(null, { callGenericBackendProvidersMethod: async () => {} }),
+    request
+  );
 }
 
 before(async () => {
