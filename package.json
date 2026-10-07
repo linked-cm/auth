@@ -51,7 +51,7 @@
     "express-session": "^1.18.1",
     "google-auth-library": "^9.0.0",
     "jsonwebtoken": "^9.0.2",
-    "jwks-rsa": "^3.0.1",
+    "jwks-rsa": "^4.0.0",
     "react-hook-form": "^7.47.0",
     "ulid": "^3.0.1",
     "uuid": "^9.0.0",
