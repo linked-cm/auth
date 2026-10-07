@@ -12,6 +12,7 @@
 import { test, before, after, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import { serving } from '../serving.mjs';
 
 const FUSEKI = process.env.AUTH_TEST_FUSEKI_URL?.replace(/\/+$/, '');
 const USER = process.env.AUTH_TEST_FUSEKI_USER;
@@ -92,9 +93,7 @@ function provider(request = { headers: {}, cookies: {} }) {
   if (!request.web) {
     request.headers = { 'x-linked-auth-transport': 'body', ...request.headers };
   }
-  const p = new AuthBackendProvider(null, fakeLincdServer);
-  p.request = request;
-  return p;
+  return serving(new AuthBackendProvider(null, fakeLincdServer), request);
 }
 
 /** An access token for the same claims that has already expired. */

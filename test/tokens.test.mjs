@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import { serving } from './serving.mjs';
 
 const SITE_ROOT = 'https://app.test';
 const SECRET = 'unit-test-secret-unit-test-secret';
@@ -62,9 +63,7 @@ function newApp() {
 const BODY_TRANSPORT = { 'x-linked-auth-transport': 'body' };
 
 function newProvider(request = { headers: { ...BODY_TRANSPORT }, cookies: {} }) {
-  const provider = new TestProvider(null, fakeLincdServer);
-  provider.request = request;
-  return provider;
+  return serving(new TestProvider(null, fakeLincdServer), request);
 }
 
 function requestWith({ bearer, cookies = {} } = {}) {
