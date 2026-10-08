@@ -94,6 +94,7 @@ import { PaidAccountTier1 } from 'lincd-dating/lib/shapes/PaidAccountTier1';
 | `AUTH_REFRESH_TOKEN_TTL` | no | refresh token lifetime in seconds (default 60 days; development 30) |
 | `AUTH_SESSION_IDLE_TTL` | no | a session not refreshed for this long ends (default 7 days; `0` = off) |
 | `AUTH_SESSION_MAX_TTL` | no | a session ends this long after sign-in (default 60 days; `0` = off) |
+| `AUTH_PASSWORD_RESET_TTL` | no | how long a password reset link works, in seconds (default 3600). A link works once, and a newer link replaces it |
 | `AUTH_SESSION_CLEANUP` | no | `false` stops the daily background cleanup of old `RefreshToken` records |
 | `AUTH_SESSION_CLEANUP_AFTER` | no | how long revoked/expired records are kept before cleanup deletes them (default 30 days) |
 | `AUTH_COOKIE_SECURE` | no | `true`/`false` overrides the https detection |

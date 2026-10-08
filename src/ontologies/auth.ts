@@ -44,6 +44,7 @@ export var account = ns('account');
 export var passwordHash = ns('passwordHash');
 export var phoneIdentifier = ns('phoneIdentifier');
 export var forgotPasswordToken = ns('forgotPasswordToken');
+export var forgotPasswordTokenExpiresAt = ns('forgotPasswordTokenExpiresAt');
 export var telephone = ns('telephone');
 export var hash = ns('hash');
 export var tokenHash = ns('tokenHash');
@@ -71,6 +72,7 @@ export const auth = {
   account,
   passwordHash,
   forgotPasswordToken,
+  forgotPasswordTokenExpiresAt,
   telephone,
   hash,
   tokenHash,

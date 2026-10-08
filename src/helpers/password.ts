@@ -3,6 +3,26 @@ import crypto from 'crypto';
 import { Person } from '@_linked/schema/shapes/Person';
 import { AuthCredential } from '../shapes/AuthCredential.js';
 import { QResult } from '@_linked/core/queries/SelectQuery';
+import { readTtlFromEnv } from '../utils/token.js';
+
+/** How long a password reset link works, in seconds, unless `AUTH_PASSWORD_RESET_TTL` is set. */
+export const DEFAULT_PASSWORD_RESET_TTL = 60 * 60;
+
+/**
+ * How long a password reset link works, in seconds (`AUTH_PASSWORD_RESET_TTL`, default 1 hour).
+ * Read once at startup; a value that is not a positive whole number throws.
+ */
+export const PASSWORD_RESET_TTL = readTtlFromEnv(
+  'AUTH_PASSWORD_RESET_TTL',
+  DEFAULT_PASSWORD_RESET_TTL
+);
+
+/** A stored value as a Date (stores may return dateTime literals as strings). */
+function toDate(value: unknown): Date | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const date = value instanceof Date ? value : new Date(value as string | number);
+  return isNaN(date.getTime()) ? undefined : date;
+}
 
 /**
  * PasswordHelper
@@ -54,19 +74,84 @@ const PasswordHelper = {
   },
 
   /**
-   * Validate the reset password token
+   * The value a password reset token is stored and looked up by: SHA-256, base64url. A plain
+   * hash is enough, because the token is 160 random bits, not a password.
+   */
+  hashResetPasswordToken(token: string): string {
+    return crypto.createHash('sha256').update(token, 'utf8').digest('base64url');
+  },
+
+  /**
+   * The `AuthCredential` fields that make `token` the credential's one outstanding reset token,
+   * valid for `PASSWORD_RESET_TTL` from `now`. Writing them replaces any earlier token.
+   */
+  resetPasswordTokenFields(token: string, now: Date = new Date()) {
+    return {
+      forgotPasswordToken: PasswordHelper.hashResetPasswordToken(token),
+      forgotPasswordTokenExpiresAt: new Date(now.getTime() + PASSWORD_RESET_TTL * 1000),
+    };
+  },
+
+  /** The `AuthCredential` fields that remove the outstanding reset token (for `update`). */
+  clearedResetPasswordTokenFields() {
+    return { forgotPasswordToken: null, forgotPasswordTokenExpiresAt: null };
+  },
+
+  /**
+   * Validate the reset password token, without using it up.
+   *
+   * Only a token issued by `sendResetPasswordLink` that has not expired is valid. Tokens stored
+   * before reset links had an expiry (stored raw, without `forgotPasswordTokenExpiresAt`) never
+   * are.
    *
    * @param token - The reset password token
-   * @returns
+   * @returns the person whose credential holds the token, or undefined
    */
-  async validateResetPasswordToken(token: string): Promise<QResult<Person>> {
-    //check if there is ANY password with this token. If yes, return the userAccount.
-    const password = await AuthCredential.select((cred) => cred.credentialOf)
+  async validateResetPasswordToken(
+    token: string,
+    now: Date = new Date()
+  ): Promise<QResult<Person> | undefined> {
+    const credential = await PasswordHelper.findResetPasswordCredential(token);
+    if (!credential) return undefined;
+    const expiresAt = toDate(credential.forgotPasswordTokenExpiresAt);
+    if (!expiresAt || expiresAt.getTime() <= now.getTime()) return undefined;
+    return credential.credentialOf;
+  },
+
+  /**
+   * Validate the reset password token and use it up: the token is removed from its credential
+   * whether or not it is still valid, so it never works again.
+   *
+   * @param token - The reset password token
+   * @returns the person whose credential held the token if it was valid, or undefined
+   */
+  async consumeResetPasswordToken(
+    token: string,
+    now: Date = new Date()
+  ): Promise<QResult<Person> | undefined> {
+    const credential = await PasswordHelper.findResetPasswordCredential(token);
+    if (!credential) return undefined;
+    await AuthCredential.update(PasswordHelper.clearedResetPasswordTokenFields()).for({
+      id: credential.id,
+    });
+    const expiresAt = toDate(credential.forgotPasswordTokenExpiresAt);
+    if (!expiresAt || expiresAt.getTime() <= now.getTime()) return undefined;
+    return credential.credentialOf;
+  },
+
+  /** The credential whose outstanding reset token is `token`, if any. */
+  async findResetPasswordCredential(token: string) {
+    if (!token || typeof token !== 'string') return undefined;
+    const tokenHash = PasswordHelper.hashResetPasswordToken(token);
+    const credential = await AuthCredential.select((cred) => [
+      cred.credentialOf,
+      cred.forgotPasswordTokenExpiresAt,
+    ])
       .where((cred) => {
-        return cred.forgotPasswordToken.equals(token);
+        return cred.forgotPasswordToken.equals(tokenHash);
       })
       .one();
-    return password?.credentialOf;
+    return credential || undefined;
   },
 };
 

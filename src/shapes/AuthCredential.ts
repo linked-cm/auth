@@ -6,6 +6,7 @@ import { Server } from '@_linked/server-utils/utils/Server';
 import { QResult } from '@_linked/core/queries/SelectQuery';
 import { Person } from '@_linked/schema/shapes/Person';
 import { literalProperty, objectProperty } from '@_linked/core/shapes/SHACL';
+import { xsd } from '@_linked/core/ontologies/xsd';
 
 @linkedShape
 export class AuthCredential extends Shape {
@@ -29,12 +30,27 @@ export class AuthCredential extends Shape {
     return '';
   }
 
+  /**
+   * The SHA-256 hash (base64url) of the outstanding password reset token, if there is one. The
+   * raw token only exists in the emailed link. Issuing a new link replaces it, and redeeming it
+   * (or changing the password) removes it.
+   */
   @literalProperty({
     path: auth.forgotPasswordToken,
     maxCount: 1,
   })
   get forgotPasswordToken(): string {
     return '';
+  }
+
+  /** When the outstanding password reset token stops working. A token without one never works. */
+  @literalProperty({
+    path: auth.forgotPasswordTokenExpiresAt,
+    datatype: xsd.dateTime,
+    maxCount: 1,
+  })
+  get forgotPasswordTokenExpiresAt(): Date {
+    return undefined as any;
   }
 
   @literalProperty({
