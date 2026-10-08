@@ -55,6 +55,12 @@ import { emailToWebID } from './utils/webID.js';
 
 var SQLiteStore = connect_sqlite3(session);
 
+/**
+ * The OAuth providers `signinOAuth` verifies cryptographically. Any other provider (facebook
+ * included) is rejected: without verification its email would be the client's word.
+ */
+const VERIFIED_OAUTH_PROVIDERS: readonly string[] = ['google', 'apple'];
+
 declare var process;
 // The configured user shape (`Auth.userType`). Historically `SchemaPerson | FoafPerson`;
 // `foaf` was the last legacy `lincd` package in this dependency tree and the
@@ -698,6 +704,10 @@ export default class AuthBackendProvider extends BackendProvider {
   /**
    * Sign in with OAuth provider
    *
+   * Only providers whose token this server verifies itself are accepted (see
+   * VERIFIED_OAUTH_PROVIDERS). The email that is signed in always comes from the verified token,
+   * never from the client: `Auth.login` signs in as whoever owns that email.
+   *
    * @param provider - The OAuth provider
    * @param oauthUserData
    * @returns
@@ -706,15 +716,18 @@ export default class AuthBackendProvider extends BackendProvider {
     provider: OAuthProvider,
     oauthUserData: any
   ): Promise<AuthenticationResult> {
-    let {
-      email,
-      name,
-      familyName,
-      givenName,
-      fullName,
-      imageUrl,
-      identityToken,
-    } = oauthUserData;
+    if (!VERIFIED_OAUTH_PROVIDERS.includes(provider)) {
+      console.error(
+        `signinOAuth: rejected provider ${JSON.stringify(provider)}, ` +
+          `only ${VERIFIED_OAUTH_PROVIDERS.join(', ')} can be verified`
+      );
+      return { error: 'Unsupported OAuth provider' };
+    }
+    oauthUserData = oauthUserData || {};
+
+    // `email` is deliberately not read from oauthUserData: it is set below from a verified token.
+    let email: string | undefined;
+    let { name, familyName, givenName, identityToken } = oauthUserData;
 
     console.log(
       provider +
@@ -783,7 +796,7 @@ export default class AuthBackendProvider extends BackendProvider {
       return { error: 'could not find email in OAuth response' };
     }
 
-    // use Auth.login pattern like createAccount for Google and other OAuth providers
+    // use Auth.login pattern like createAccount; `email` comes from the verified token
     return Auth.login(
       this,
       async () => {
