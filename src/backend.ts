@@ -725,16 +725,25 @@ export default class AuthBackendProvider extends BackendProvider {
     );
 
     // Handle Apple Sign-In with Identity Token
-    if (provider === 'apple' && identityToken) {
-      const { email: appleEmail, sub } = await AppleHelper.decodeIdentityToken(
-        identityToken
-      );
+    // The email must come from a verified token: without one, the client-supplied email would be
+    // trusted as is.
+    if (provider === 'apple') {
+      if (!identityToken) {
+        console.error('Apple OAuth: No identity token provided');
+        return { error: 'No Apple identity token provided' };
+      }
+
+      const applePayload = await AppleHelper.decodeIdentityToken(identityToken);
+      if (!applePayload) {
+        console.error('Apple OAuth: Invalid identity token');
+        return { error: 'Invalid Apple identity token' };
+      }
 
       // use extracted email from Apple token
-      email = appleEmail;
+      email = applePayload.email;
 
       // store sub for later use when creating IdentityToken
-      oauthUserData._appleSub = sub;
+      oauthUserData._appleSub = applePayload.sub;
 
       console.log('Apple OAuth validated successfully for:', email);
     }
