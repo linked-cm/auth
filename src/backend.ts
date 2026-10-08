@@ -484,6 +484,10 @@ export default class AuthBackendProvider extends BackendProvider {
   /**
    * Reset the password
    *
+   * With a token (from a link sent by `sendResetPasswordLink`), the token is used up by this
+   * call: it works once, and only until it expires (`AUTH_PASSWORD_RESET_TTL`). Without a token
+   * the signed-in user's password is changed. Either way any outstanding reset link stops working.
+   *
    * @param password - The new password
    * @param confirmPassword - The confirmed password
    * @param token - The reset password token
@@ -502,8 +506,9 @@ export default class AuthBackendProvider extends BackendProvider {
     }
 
     //reset password works both if a token is provided, and if a user is currently logged in
-    const user: QResult<Person> = token
-      ? await PasswordHelper.validateResetPasswordToken(token)
+    // A token is used up here, before anything else can fail: a link must never work twice.
+    const user: QResult<Person> | undefined = token
+      ? await PasswordHelper.consumeResetPasswordToken(token)
       : this.request?.linkedAuth?.user;
 
     if (!user) {
@@ -550,8 +555,10 @@ export default class AuthBackendProvider extends BackendProvider {
         password
       );
 
+      // a new password also ends any reset link still outstanding for it
       await AuthCredential.update({
         passwordHash: newHashedPassword,
+        ...PasswordHelper.clearedResetPasswordTokenFields(),
       }).for(dbPassword);
     }
 
@@ -590,6 +597,8 @@ export default class AuthBackendProvider extends BackendProvider {
    */
   async sendResetPasswordLink(email: string) {
     const newToken = PasswordHelper.generateToken();
+    // Only the hash is stored, with an expiry. Writing it replaces any earlier link's token.
+    const resetTokenFields = PasswordHelper.resetPasswordTokenFields(newToken);
     const normalizedEmail = email.toLowerCase();
     let webID: string;
     try {
@@ -635,12 +644,10 @@ export default class AuthBackendProvider extends BackendProvider {
         },
         email: normalizedEmail,
         telephone: account.accountOf.telephone || undefined,
-        forgotPasswordToken: newToken,
+        ...resetTokenFields,
       });
     } else {
-      await AuthCredential.update({
-        forgotPasswordToken: newToken,
-      }).for(existingCredential);
+      await AuthCredential.update(resetTokenFields).for(existingCredential);
     }
 
     const person = await this.userShape
@@ -994,6 +1001,7 @@ export default class AuthBackendProvider extends BackendProvider {
     webId: string;
     accessToken: string;
     refreshToken: string;
+    /** Ignored: the email comes from the verified token. Kept so existing callers still type-check. */
     email?: string;
   }) {
     // DEV_AUTH gate — tolerate either string 'true' or boolean true.
@@ -1015,7 +1023,8 @@ export default class AuthBackendProvider extends BackendProvider {
     if (claims.sub && claims.sub !== input.webId) {
       return { error: 'WebID does not match token subject' };
     }
-    const email = (claims.email as string | undefined) ?? input.email;
+    // Only the verified token's email claim; `input.email` is the client's word and never stored.
+    const email = claims.email as string | undefined;
 
     // Dev signin doesn't persist a Person — the WebID profile is hosted by the
     // identity provider (e.g. webid.email). Plain identity data, never a live Shape.

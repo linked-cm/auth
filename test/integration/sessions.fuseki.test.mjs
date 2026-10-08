@@ -237,6 +237,42 @@ test('resetPassword revokes every session of the account', async () => {
   assert.equal(withNewPassword.error, undefined);
 });
 
+test('a reset link stores only a hash with an expiry, and works once', async () => {
+  const { LinkedEmail } = await import('@_linked/server-utils/utils/LinkedEmail');
+  const sent = [];
+  const send = mock.method(LinkedEmail, 'send', async (options) => {
+    sent.push(options);
+  });
+  try {
+    assert.equal(await provider().sendResetPasswordLink(email), true);
+  } finally {
+    send.mock.restore();
+  }
+  const token = sent[0].htmlbody.match(/reset-password\?token=([^'"&\s]+)/)[1];
+  const hash = crypto.createHash('sha256').update(token).digest('base64url');
+  const stored = async () =>
+    sparql(`
+      PREFIX auth: <https://linked.cm/ont/auth/>
+      SELECT ?token ?expires WHERE {
+        { GRAPH ?g { ?s auth:forgotPasswordToken ?token . OPTIONAL { ?s auth:forgotPasswordTokenExpiresAt ?expires } } }
+        UNION { ?s auth:forgotPasswordToken ?token . OPTIONAL { ?s auth:forgotPasswordTokenExpiresAt ?expires } }
+      }`);
+  const rows = await stored();
+  assert.equal(rows.length, 1, 'one outstanding reset token');
+  assert.equal(rows[0].token.value, hash, 'the hash is stored, not the raw token');
+  assert.equal(rows[0].expires?.datatype, 'http://www.w3.org/2001/XMLSchema#dateTime');
+  const expiresInMs = Date.parse(rows[0].expires.value) - Date.now();
+  assert.ok(expiresInMs > 59 * 60 * 1000 && expiresInMs <= 60 * 60 * 1000, `expires in ${expiresInMs}ms`);
+
+  const reset = await provider().resetPassword(PASSWORD_2, PASSWORD_2, token);
+  assert.equal(reset.error, undefined, reset.error);
+  assert.equal((await stored()).length, 0, 'the token is removed once used');
+  const again = await provider().resetPassword(PASSWORD_1, PASSWORD_1, token);
+  assert.ok(again.error, 'the token does not work twice');
+  const signin = await provider().signinWithPassword(email, PASSWORD_2);
+  assert.equal(signin.error, undefined, 'the password from the first use stands');
+});
+
 test('removeAccount deletes the account\'s refresh token records', async () => {
   const signin = await provider().signinWithPassword(email, PASSWORD_2);
   const accountId = signin.auth.userAccount.id;
