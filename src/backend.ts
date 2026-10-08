@@ -355,7 +355,10 @@ export default class AuthBackendProvider extends BackendProvider {
       '/',
       session({
         secret: sessionSecret,
-        name: '@_linked/auth',
+        // Cookie names cannot contain "@" or "/". The package id fails
+        // cookie.serialize, the JSON response never finishes, and the client
+        // never learns that the WhatsApp code was sent.
+        name: 'linked.auth',
         //TODO: this broke sessions in production, need to check what else we need to do to make secure sessions work
         // cookie: {secure: process.env.NODE_ENV === 'production'},
         resave: true,
