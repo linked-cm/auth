@@ -335,11 +335,31 @@ export default class AuthBackendProvider extends BackendProvider {
       };
     }
 
+    await this.upgradePasswordHash(existingCredential, plainPassword);
+
     const person = existingCredential.credentialOf;
 
     const account = await this.getOrCreateAccount(person);
 
     return Auth.onSigninSuccessful(this, person, account);
+  }
+
+  /**
+   * Re-hash a password that was just verified, if its stored hash has a lower cost than
+   * `PASSWORD_HASH_COST`. Only `passwordHash` is written. A failure is logged and otherwise
+   * ignored: it must never fail the sign-in, and the next sign-in tries again.
+   */
+  protected async upgradePasswordHash(
+    credential: { id: string; passwordHash?: string },
+    plainPassword: string
+  ): Promise<void> {
+    if (!PasswordHelper.needsRehash(credential.passwordHash)) return;
+    try {
+      const passwordHash = await PasswordHelper.generateHashedPassword(plainPassword);
+      await AuthCredential.update({ passwordHash }).for({ id: credential.id });
+    } catch (error) {
+      console.error(`Could not upgrade the password hash of credential ${credential.id}:`, error);
+    }
   }
 
   /**
@@ -482,21 +502,29 @@ export default class AuthBackendProvider extends BackendProvider {
     return credential;
   }
   /**
-   * Reset the password
+   * Reset the password (with a token from the reset email), or change it (signed in).
    *
    * With a token (from a link sent by `sendResetPasswordLink`), the token is used up by this
-   * call: it works once, and only until it expires (`AUTH_PASSWORD_RESET_TTL`). Without a token
-   * the signed-in user's password is changed. Either way any outstanding reset link stops working.
+   * call: it works once, and only until it expires (`AUTH_PASSWORD_RESET_TTL`).
+   *
+   * Without a token the signed-in user's password is changed, and `currentPassword` must be
+   * their current password. An account that has no password yet (e.g. OAuth only) cannot get
+   * one this way: it gets one through the reset email, and is told so (`action:
+   * 'reset_password_by_email'`).
+   *
+   * Either way any outstanding reset link stops working.
    *
    * @param password - The new password
    * @param confirmPassword - The confirmed password
-   * @param token - The reset password token
+   * @param token - The reset password token, if any
+   * @param currentPassword - The current password; required when there is no token
    * @returns
    */
   async resetPassword(
     password: string,
     confirmPassword: string,
-    token: string
+    token?: string,
+    currentPassword?: string
   ): Promise<AuthenticationResult> {
     // check if password and confirmPassword match
     if (password !== confirmPassword) {
@@ -516,6 +544,35 @@ export default class AuthBackendProvider extends BackendProvider {
       return {
         error: 'No user account found to reset password',
       };
+    }
+
+    // get the password from the database
+    const dbPassword = await this.getPasswordForUser(user);
+
+    // Without a token, this is a signed-in change: it needs the current password, so a session
+    // alone (an unattended device, a stolen access token) cannot take over the account.
+    if (!token) {
+      if (!dbPassword?.passwordHash) {
+        return {
+          error:
+            'This account has no password yet. Use the reset password email to set one.',
+          action: 'reset_password_by_email',
+        };
+      }
+      if (!currentPassword || typeof currentPassword !== 'string') {
+        return {
+          error: 'Your current password is required to change your password',
+        };
+      }
+      const currentIsValid = await PasswordHelper.checkPassword(
+        currentPassword,
+        dbPassword.passwordHash
+      );
+      if (!currentIsValid) {
+        return {
+          error: 'Your current password is incorrect',
+        };
+      }
     }
 
     //find or create the account of the user
@@ -538,10 +595,7 @@ export default class AuthBackendProvider extends BackendProvider {
       };
     }
 
-    // get the password from the database
-    const dbPassword = await this.getPasswordForUser(user);
-
-    // if no password found, create a new one
+    // if no password found, create a new one (only reachable with a valid reset token)
     if (!dbPassword) {
       console.warn(
         'Password not found for this account : ' +

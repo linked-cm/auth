@@ -15,6 +15,11 @@
   "linkedPackage": true,
   "main": "lib/esm/index.js",
   "types": "index.d.ts",
+  "files": [
+    "lib",
+    "readme.md",
+    "CHANGELOG.md"
+  ],
   "license": "ISC",
   "scripts": {
     "start": "npm exec linked dev",

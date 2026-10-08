@@ -11,11 +11,16 @@ import { Dialog } from '@capacitor/dialog';
 
 interface CreateNewPasswordFormProps {
   className?: string;
+  /**
+   * The token from a reset password email. Without one, the form changes the signed-in user's
+   * password and asks for their current password.
+   */
   token?: string;
   onPasswordIsReset?: () => void;
 }
 
 interface CreateNewPasswordFormData {
+  currentPassword?: string;
   password: string;
   confirmPassword: string;
 }
@@ -36,6 +41,7 @@ export function CreateNewPasswordForm({
   const [loading, setLoading] = useState<boolean>(false);
 
   const resetPassword: SubmitHandler<CreateNewPasswordFormData> = async ({
+    currentPassword,
     password,
     confirmPassword,
   }) => {
@@ -46,8 +52,16 @@ export function CreateNewPasswordForm({
         'resetPassword',
         password,
         confirmPassword,
-        token
+        token,
+        token ? undefined : currentPassword
       );
+      if (res?.error) {
+        await Dialog.alert({
+          title: 'Password not changed',
+          message: res.error,
+        });
+        return;
+      }
       if (res.auth && onPasswordIsReset) {
         auth.updateAuth({
           auth: res.auth,
@@ -71,9 +85,11 @@ export function CreateNewPasswordForm({
   restProps = useStyles(restProps, style.root);
 
   // disable button if any error or password not matches or fields are empty
+  const currentPassword = watch('currentPassword');
   const password = watch('password');
   const confirmPassword = watch('confirmPassword');
   const isDisabled =
+    (!token && (!currentPassword || !!errors.currentPassword)) ||
     !!errors.password ||
     !!errors.confirmPassword ||
     !password ||
@@ -86,6 +102,23 @@ export function CreateNewPasswordForm({
       <form>
         <h2>Set A New Password</h2>
         <div className={style.FormGroup}>
+          {!token && (
+            <>
+              <Input
+                type={'password'}
+                autoComplete="current-password"
+                placeholder="Enter your current password"
+                {...register('currentPassword', {
+                  required: true,
+                })}
+              />
+              {errors?.currentPassword && (
+                <p className={style.ErrorMessage}>
+                  Current password is required
+                </p>
+              )}
+            </>
+          )}
           <Input
             type={'password'}
             placeholder="Enter new password"

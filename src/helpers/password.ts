@@ -5,6 +5,13 @@ import { AuthCredential } from '../shapes/AuthCredential.js';
 import { QResult } from '@_linked/core/queries/SelectQuery';
 import { readTtlFromEnv } from '../utils/token.js';
 
+/**
+ * The bcrypt cost (log2 of the rounds) of every new password hash. Hashes stored with a lower
+ * cost (releases before 3.0.4 used 3, which bcrypt raises to its minimum of 4) are re-hashed at
+ * this cost the next time their owner signs in. Native bcrypt takes roughly 80 ms per hash at 10.
+ */
+export const PASSWORD_HASH_COST = 10;
+
 /** How long a password reset link works, in seconds, unless `AUTH_PASSWORD_RESET_TTL` is set. */
 export const DEFAULT_PASSWORD_RESET_TTL = 60 * 60;
 
@@ -35,12 +42,20 @@ const PasswordHelper = {
    * @returns
    */
   async generateHashedPassword(plainTextPassword: string) {
+    return bcrypt.hash(plainTextPassword, PASSWORD_HASH_COST);
+  },
+
+  /**
+   * Whether a stored hash was made with a lower cost than `PASSWORD_HASH_COST`, and should be
+   * replaced by a new hash of the password once that password is known to be right. A missing
+   * or malformed hash never needs one (there is nothing valid to upgrade).
+   */
+  needsRehash(hashedPassword: string | undefined | null): boolean {
+    if (!hashedPassword || typeof hashedPassword !== 'string') return false;
     try {
-      const saltRounds = 3; // Generate a salt (a random value to add to the password before hashing)
-      const hashedPassword = await bcrypt.hash(plainTextPassword, saltRounds);
-      return hashedPassword;
-    } catch (error) {
-      throw error;
+      return bcrypt.getRounds(hashedPassword) < PASSWORD_HASH_COST;
+    } catch {
+      return false;
     }
   },
 

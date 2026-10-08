@@ -1,4 +1,6 @@
 // Password reset links: sendResetPasswordLink issues a token, resetPassword redeems it.
+// Also: changing the password while signed in (resetPassword without a token) requires the
+// current password, and signinWithPassword upgrades a hash below PASSWORD_HASH_COST.
 //
 // Runs against the BUILT package in lib/ (build first: `npx linked build`). No store: the
 // `AuthCredential` and `UserAccount` queries are answered from an in-memory table, the email is
@@ -31,6 +33,7 @@ const sessions = await import(new URL('utils/sessions.js', libDir));
 const { default: PasswordHelper } = await import(new URL('helpers/password.js', libDir));
 const { default: AuthBackendProvider } = await import(new URL('backend.js', libDir));
 const { UserAccount } = await import('@_linked/sioc/shapes/UserAccount');
+const { default: bcrypt } = await import('bcrypt');
 const { LinkedEmail } = await import('@_linked/server-utils/utils/LinkedEmail');
 
 const EMAIL = 'ada@example.test';
@@ -58,6 +61,8 @@ class TestProvider extends AuthBackendProvider {
  */
 function fakeCredentialTable() {
   const rows = new Map();
+  // every update, as [credential id, the data written]
+  const updates = [];
   let nextId = 1;
   const copy = (row) => (row ? structuredClone(row) : null);
   const matches = (row, conditions) =>
@@ -89,6 +94,7 @@ function fakeCredentialTable() {
   };
   return {
     rows,
+    updates,
     insert(data) {
       const row = { id: `https://app.test/credential/${nextId++}` };
       write(row, data);
@@ -100,7 +106,9 @@ function fakeCredentialTable() {
       mock.method(AuthCredential, 'create', async (data) => this.insert(data));
       mock.method(AuthCredential, 'update', (data) => ({
         for: async (node) => {
-          const row = rows.get(typeof node === 'string' ? node : node.id);
+          const id = typeof node === 'string' ? node : node.id;
+          updates.push([id, { ...data }]);
+          const row = rows.get(id);
           if (row) write(row, data);
           return copy(row);
         },
@@ -162,20 +170,27 @@ async function passwordIs(password) {
   return PasswordHelper.checkPassword(password, storedCredential().passwordHash);
 }
 
-function existingPassword() {
-  credentials.insert({
+// a cost-4 hash of OLD_PASSWORD, as releases before 3.0.4 stored them
+const OLD_PASSWORD = 'correct horse battery staple';
+const COST_4_HASH = '$2b$04$eye1NrzS0IIvhvF2J5vUSev86XW.nY.Hn/2cnBV/0ecIMgys8pvGC';
+
+function existingPassword(passwordHash = COST_4_HASH) {
+  return credentials.insert({
     credentialOf: { id: PERSON_ID },
     email: EMAIL,
-    passwordHash: '$2b$04$eye1NrzS0IIvhvF2J5vUSev86XW.nY.Hn/2cnBV/0ecIMgys8pvGC',
+    passwordHash,
   });
 }
 
-test('a fresh reset link resets the password', async () => {
+const signedIn = () => (request.linkedAuth = { user: { id: PERSON_ID } });
+
+test('a fresh reset link resets the password, without the current one, at cost 10', async () => {
   existingPassword();
   const token = await requestResetLink();
   const result = await provider.resetPassword('new-pass-1', 'new-pass-1', token);
   assert.equal(result, SIGNED_IN);
   assert.equal(await passwordIs('new-pass-1'), true);
+  assert.equal(bcrypt.getRounds(storedCredential().passwordHash), 10);
 });
 
 test('a fresh reset link also works for an account that had no password yet', async () => {
@@ -254,8 +269,11 @@ test('requesting a new link invalidates the previous one', async () => {
 test('changing the password while signed in ends an outstanding reset link', async () => {
   existingPassword();
   const token = await requestResetLink();
-  request.linkedAuth = { user: { id: PERSON_ID } };
-  assert.equal(await provider.resetPassword('new-pass-1', 'new-pass-1', undefined), SIGNED_IN);
+  signedIn();
+  assert.equal(
+    await provider.resetPassword('new-pass-1', 'new-pass-1', undefined, OLD_PASSWORD),
+    SIGNED_IN
+  );
   delete request.linkedAuth;
 
   const result = await provider.resetPassword('new-pass-2', 'new-pass-2', token);
@@ -278,4 +296,94 @@ test('an unknown or empty token is rejected', async () => {
     assert.ok(result?.error, `token ${JSON.stringify(token)} was accepted`);
   }
   assert.equal(await passwordIs('new-pass-1'), false);
+});
+
+// --- changing the password while signed in (no reset token) ---
+
+test('a change without a token and without the current password is rejected', async () => {
+  existingPassword();
+  signedIn();
+  for (const currentPassword of [undefined, '']) {
+    const result = await provider.resetPassword('new-pass-1', 'new-pass-1', undefined, currentPassword);
+    assert.deepEqual(result, { error: 'Your current password is required to change your password' });
+  }
+  assert.equal(await passwordIs(OLD_PASSWORD), true, 'the password was changed');
+});
+
+test('a change with a wrong current password is rejected', async () => {
+  existingPassword();
+  signedIn();
+  const result = await provider.resetPassword('new-pass-1', 'new-pass-1', undefined, 'wrong');
+  assert.deepEqual(result, { error: 'Your current password is incorrect' });
+  assert.equal(await passwordIs(OLD_PASSWORD), true, 'the password was changed');
+});
+
+test('a change with the correct current password succeeds, at cost 10', async () => {
+  existingPassword();
+  signedIn();
+  const result = await provider.resetPassword('new-pass-1', 'new-pass-1', undefined, OLD_PASSWORD);
+  assert.equal(result, SIGNED_IN);
+  assert.equal(await passwordIs('new-pass-1'), true);
+  assert.equal(await passwordIs(OLD_PASSWORD), false);
+  assert.equal(bcrypt.getRounds(storedCredential().passwordHash), 10);
+});
+
+test('a change without a token for an account with no password is rejected', async () => {
+  signedIn();
+  // no credential at all
+  const none = await provider.resetPassword('new-pass-1', 'new-pass-1', undefined, 'anything');
+  assert.equal(none?.action, 'reset_password_by_email', JSON.stringify(none));
+  assert.equal(credentials.rows.size, 0, 'a credential was created');
+
+  // a credential that only holds a reset token (an OAuth account that requested a link)
+  await requestResetLink();
+  signedIn();
+  const tokenOnly = await provider.resetPassword('new-pass-1', 'new-pass-1', undefined, 'anything');
+  assert.equal(tokenOnly?.action, 'reset_password_by_email', JSON.stringify(tokenOnly));
+  assert.equal(storedCredential().passwordHash, undefined, 'a password was set');
+});
+
+test('a change without a token and without a session is rejected', async () => {
+  existingPassword();
+  const result = await provider.resetPassword('new-pass-1', 'new-pass-1', undefined, OLD_PASSWORD);
+  assert.ok(result?.error, JSON.stringify(result));
+  assert.equal(await passwordIs(OLD_PASSWORD), true);
+});
+
+// --- signing in upgrades old hashes ---
+
+test('a cost-4 hash is upgraded to cost 10 by a successful sign-in', async () => {
+  const { id } = existingPassword();
+  const result = await provider.signinWithPassword(EMAIL, OLD_PASSWORD);
+  assert.equal(result, SIGNED_IN);
+  const hash = storedCredential().passwordHash;
+  assert.equal(bcrypt.getRounds(hash), 10);
+  assert.equal(await passwordIs(OLD_PASSWORD), true);
+  // the upgrade writes the hash and nothing else
+  assert.deepEqual(credentials.updates, [[id, { passwordHash: hash }]]);
+});
+
+test('a failed sign-in does not re-hash', async () => {
+  existingPassword();
+  const result = await provider.signinWithPassword(EMAIL, 'wrong');
+  assert.ok(result?.error, JSON.stringify(result));
+  assert.equal(storedCredential().passwordHash, COST_4_HASH);
+  assert.deepEqual(credentials.updates, []);
+});
+
+test('a hash already at cost 10 is not rewritten by a sign-in', async () => {
+  existingPassword(await bcrypt.hash(OLD_PASSWORD, 10));
+  assert.equal(await provider.signinWithPassword(EMAIL, OLD_PASSWORD), SIGNED_IN);
+  assert.deepEqual(credentials.updates, []);
+});
+
+test('a failed upgrade does not fail the sign-in', async () => {
+  existingPassword();
+  mock.method(AuthCredential, 'update', () => ({
+    for: async () => {
+      throw new Error('store down');
+    },
+  }));
+  assert.equal(await provider.signinWithPassword(EMAIL, OLD_PASSWORD), SIGNED_IN);
+  assert.equal(storedCredential().passwordHash, COST_4_HASH);
 });

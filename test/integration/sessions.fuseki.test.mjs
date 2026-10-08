@@ -42,6 +42,8 @@ const { LinkedStorage } = await import('@_linked/core/utils/LinkedStorage');
 await import(new URL('shapes/index.js', libDir));
 const sessions = await import(new URL('utils/sessions.js', libDir));
 const { default: AuthBackendProvider } = await import(new URL('backend.js', libDir));
+const { AuthCredential } = await import(new URL('shapes/AuthCredential.js', libDir));
+const { default: bcrypt } = await import('bcrypt');
 
 const fakeLincdServer = { callGenericBackendProvidersMethod: async () => {} };
 
@@ -226,7 +228,9 @@ test('resetPassword revokes every session of the account', async () => {
   const deviceB = await provider().signinWithPassword(email, PASSWORD_1);
 
   const p = await signedInProvider(deviceA.accessToken);
-  const reset = await p.resetPassword(PASSWORD_2, PASSWORD_2, undefined);
+  const withoutCurrent = await p.resetPassword(PASSWORD_2, PASSWORD_2, undefined);
+  assert.ok(withoutCurrent.error, 'a change without the current password was accepted');
+  const reset = await p.resetPassword(PASSWORD_2, PASSWORD_2, undefined, PASSWORD_1);
   assert.equal(reset.error, undefined, reset.error);
 
   assert.ok((await refresh(deviceA)).error, 'device A revoked');
@@ -235,6 +239,36 @@ test('resetPassword revokes every session of the account', async () => {
   assert.equal(current.error, undefined, 'the session started by the reset works');
   const withNewPassword = await provider().signinWithPassword(email, PASSWORD_2);
   assert.equal(withNewPassword.error, undefined);
+});
+
+test('sign-in upgrades a cost-4 password hash to cost 10, writing only the hash', async () => {
+  const stored = async () =>
+    sparql(`
+      PREFIX auth: <https://linked.cm/ont/auth/>
+      SELECT ?s ?hash ?of WHERE {
+        { GRAPH ?g { ?s auth:passwordHash ?hash . OPTIONAL { ?s auth:credentialOf ?of } } }
+        UNION { ?s auth:passwordHash ?hash . OPTIONAL { ?s auth:credentialOf ?of } }
+      }`);
+  const [before] = await stored();
+  assert.equal(bcrypt.getRounds(before.hash.value), 10, 'createAccount / resetPassword hash at 10');
+  // what releases before 3.0.4 stored
+  await AuthCredential.update({ passwordHash: await bcrypt.hash(PASSWORD_2, 4) }).for({
+    id: before.s.value,
+  });
+  assert.equal(bcrypt.getRounds((await stored())[0].hash.value), 4);
+
+  const failed = await provider().signinWithPassword(email, PASSWORD_1);
+  assert.ok(failed.error);
+  assert.equal(bcrypt.getRounds((await stored())[0].hash.value), 4, 'a failed sign-in re-hashed');
+
+  const signin = await provider().signinWithPassword(email, PASSWORD_2);
+  assert.equal(signin.error, undefined, signin.error);
+  const after = await stored();
+  assert.equal(after.length, 1, 'one password hash');
+  assert.equal(after[0].s.value, before.s.value);
+  assert.equal(after[0].of?.value, before.of?.value, 'credentialOf kept');
+  assert.equal(bcrypt.getRounds(after[0].hash.value), 10);
+  assert.equal((await provider().signinWithPassword(email, PASSWORD_2)).error, undefined);
 });
 
 test('a reset link stores only a hash with an expiry, and works once', async () => {

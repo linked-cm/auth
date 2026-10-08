@@ -3,8 +3,8 @@ summary: >
   `@capacitor/dialog` 7 -> 8 is deferred: we decided not to upgrade Capacitor for now. The
   plugin itself has no API change in 8 (version bump only), but 8 declares a peer of
   `@capacitor/core >=8`, which drags in the Capacitor 8 platform floor (Node 22, Xcode 26,
-  iOS 15, Android SDK 36). The only use is one `Dialog.alert` in `CreateNewPasswordForm`, so
-  the better outcome is probably to drop the dependency rather than upgrade it.
+  iOS 15, Android SDK 36). The only uses are two `Dialog.alert` calls in `CreateNewPasswordForm`,
+  so the better outcome is probably to drop the dependency rather than upgrade it.
 status: Deferred -- held by the shared Renovate preset; replaces Renovate PR linked-fw/auth#47
 ---
 
@@ -19,9 +19,9 @@ back every Monday. Remove that rule when this is picked up.
 ## How it is used here
 
 - Declared in `dependencies` as `^7.0.2` -- so every consumer of `@_linked/auth` installs it.
-- One call site: `src/components/CreateNewPasswordForm.tsx` calls `Dialog.alert(...)` in the
-  `catch` of the password reset, to say "Something went wrong". On the web the plugin falls back
-  to `window.alert`.
+- One file: `src/components/CreateNewPasswordForm.tsx` calls `Dialog.alert(...)` twice, to show
+  the server's error (e.g. a wrong current password) and, in the `catch` of the password reset,
+  to say "Something went wrong". On the web the plugin falls back to `window.alert`.
 - Nothing else in `src/` imports `@capacitor/*`. `@capacitor/core` is not declared here at all,
   although the plugin needs it at runtime (it is a peer of the plugin) -- auth relies on the
   consumer to have it.
