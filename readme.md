@@ -101,6 +101,16 @@ import { PaidAccountTier1 } from 'lincd-dating/lib/shapes/PaidAccountTier1';
 | `AUTH_COOKIE_DOMAIN` | no | cookie domain (default: the host) |
 | `AUTH_REFRESH_COOKIE_PATH` | no | path of the refresh cookie (default `/call/@_linked/auth`; prefix it when the app is served under a path) |
 
+4. If you offer Sign in with Apple or Google, set the client IDs that identity tokens must be issued to. **Without them that provider's sign-in is rejected** (fail closed): a token issued to any other app is never accepted.
+
+| Variable | Meaning |
+|---|---|
+| `APPLE_CLIENT_ID` | the Services ID used for Sign in with Apple on the web (comma-separate several) |
+| `APPLE_CLIENT_ID_IOS` | the app's bundle ID, for native Sign in with Apple (comma-separate several) |
+| `GOOGLE_CLIENT_ID` | the Google OAuth web client ID |
+| `GOOGLE_CLIENT_ID_IOS` | the Google OAuth iOS client ID |
+| `GOOGLE_CLIENT_ID_ANDROID` | the Google OAuth Android client ID |
+
 Old refresh token records are deleted by `cleanupExpiredSessions(store?, {olderThan})` from `@_linked/auth/utils/sessions`. The backend provider runs it in the background a few minutes after startup and then at most once a day per process; turn that off with `AUTH_SESSION_CLEANUP=false` when a separate job does it.
 
 ## How to use on Frontend
