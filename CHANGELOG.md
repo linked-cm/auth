@@ -1,5 +1,15 @@
 # @\_linked/auth
 
+## 3.0.2
+
+### Patch Changes
+
+- [#81](https://github.com/linked-fw/auth/pull/81) [`a293246`](https://github.com/linked-fw/auth/commit/a293246e0c0bec64ea55e19e5cc17392d5b44575) Thanks [@flyon](https://github.com/flyon)! - Security: `signinOAuth` now only accepts providers whose token the server verifies itself, which are `google` and `apple`. Any other provider, including a missing or unknown one, returns `{error: 'Unsupported OAuth provider'}` and is logged.
+  
+  **Facebook sign-in via `signinOAuth` is no longer accepted** until proper Facebook token verification lands. It trusted the email the client sent, without checking it against Facebook, and signed in the account that owns that email. Apps that call `signinOAuth('facebook', …)` now get the error above.
+  
+  The email that is signed in now always comes from the verified Google or Apple token. An `email` field sent by the client is ignored.
+
 ## 3.0.1
 
 ### Patch Changes
