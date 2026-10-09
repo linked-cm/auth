@@ -1,5 +1,11 @@
 # @\_linked/auth
 
+## 3.0.8
+
+### Patch Changes
+
+- [#94](https://github.com/linked-fw/auth/pull/94) [`4137de1`](https://github.com/linked-fw/auth/commit/4137de18dcd4bdba5e09068a361b3ddd7d1867b6) Thanks [@flyon](https://github.com/flyon)! - Build with `linked build` instead of a hand-rolled `tsc` + `copyfiles` script, and drop the `rimraf`/`copyfiles` devDependencies. The published `lib/` output is unchanged.
+
 ## 3.0.7
 
 ### Patch Changes
