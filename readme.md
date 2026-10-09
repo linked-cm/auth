@@ -111,6 +111,8 @@ import { PaidAccountTier1 } from 'lincd-dating/lib/shapes/PaidAccountTier1';
 | `GOOGLE_CLIENT_ID` | the Google OAuth web client ID |
 | `GOOGLE_CLIENT_ID_IOS` | the Google OAuth iOS client ID |
 | `GOOGLE_CLIENT_ID_ANDROID` | the Google OAuth Android client ID |
+| `AUTH_APPLE_NONCE` | `optional` (default) or `required`; see *Apple sign-in nonce* below. Any other value counts as `required` |
+| `AUTH_OAUTH_NONCE_TTL` | seconds a sign-in nonce can be redeemed (default 600) |
 
 Old refresh token records are deleted by `cleanupExpiredSessions(store?, {olderThan})` from `@_linked/auth/utils/sessions`. The backend provider runs it in the background a few minutes after startup and then at most once a day per process; turn that off with `AUTH_SESSION_CLEANUP=false` when a separate job does it.
 
@@ -135,8 +137,66 @@ const userAccount = auth.userAccount;
 ### Signin with OAuth
 
 ```tsx
-// example OAuth signin method
+const auth = useAuth();
+// Google: the ID token from Google Sign-In. Apple: the identity token (plus, on first consent,
+// the givenName/familyName Apple hands the client).
+const result = await auth.signinOAuth('google', { authentication: { idToken } });
+if ('error' in result) {
+  if (result.action === 'sign_in_to_link') {
+    // An account with this email already exists and the provider may not be attached to it on
+    // its own (it has a password, or another identity). Ask the user to sign in the way they did
+    // before, then connect the provider from inside that session:
+    //   await auth.linkOAuthIdentity('google', { authentication: { idToken } });
+  }
+  showError(result.error);
+}
 ```
+
+The server verifies the provider's token and finds the account from what the provider vouches
+for, never from what the client sent:
+
+1. An identity already linked to an account (provider + subject) signs in to that account.
+2. Otherwise an account with the same email is reached only when the provider verifies the email
+   (Google, Apple), the account has **no password**, and it is not linked to a provider without
+   verified emails or to a different identity at the same provider. Anything else answers
+   `{error, action: 'sign_in_to_link'}`. Account creation does not verify email, so a password
+   account may have been registered by someone else in advance; attaching to it by email would
+   hand them the user's sign-in.
+3. Otherwise a new account is created, without a password.
+
+Each sign-in that reaches an account stores a link (`IdentityToken` with `sub` and
+`identityProvider`). The provider's token itself is never stored. Links written before 3.0.7
+carry no provider (they are Apple links) and may hold the raw Apple identity token; it is removed
+the next time that user signs in. To remove all of them at once:
+
+```sparql
+PREFIX auth: <https://linked.cm/ont/auth/>
+DELETE { GRAPH ?g { ?t auth:token ?v } } WHERE { GRAPH ?g { ?t a auth:IdentityToken ; auth:token ?v } }
+```
+
+#### Apple sign-in nonce
+
+Ask the server for a nonce before starting Sign in with Apple, give it (or its SHA-256, hex) to
+Apple as the request's `nonce`, and send the raw nonce back with the identity token:
+
+```tsx
+const { nonce } = await auth.createOAuthNonce();
+// native: pass sha256hex(nonce) to Apple; Apple JS: pass nonce as is
+const result = await auth.signinOAuth('apple', { identityToken, nonce });
+```
+
+The server checks that it issued the nonce (it is signed with `JWT_SECRET`), that it has not
+expired, that the token's `nonce` claim carries it, and that it was never used before (a used
+nonce is recorded as `UsedOAuthNonce` until it expires). A stolen identity token is then useless
+without its nonce and can never sign in twice. Issuing a nonce stores nothing.
+
+With `AUTH_APPLE_NONCE=optional` (the default) a sign-in that sends no nonce is still accepted,
+so existing clients keep working while they are updated; it has no replay protection. Set
+`AUTH_APPLE_NONCE=required` once every client sends one. A nonce the client made up itself is
+always rejected.
+
+`AuthCredential.userHasPassword()` tells whether the signed-in user can sign in with a password
+(an OAuth-only account cannot).
 
 ### Sign out
 

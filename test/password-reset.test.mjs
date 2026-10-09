@@ -56,7 +56,7 @@ class TestProvider extends AuthBackendProvider {
 
 /**
  * An in-memory stand-in for the `AuthCredential` query API the provider uses:
- * `select(...).where(...)/.for(...).one()`, `create(data)` and `update(data).for(node)`.
+ * `select(...).where(...)/.for(...).one()` (or the query awaited for every match), `create(data)` and `update(data).for(node)`.
  * A `null` in an update unsets the property, as it does for a real store.
  */
 function fakeCredentialTable() {
@@ -84,6 +84,12 @@ function fakeCredentialTable() {
     },
     async one() {
       return copy([...rows.values()].find((row) => matches(row, conditions)));
+    },
+    // awaiting the query itself gives every match, like the real query builder
+    then(resolve, reject) {
+      return Promise.resolve(
+        [...rows.values()].filter((row) => matches(row, conditions)).map(copy)
+      ).then(resolve, reject);
     },
   });
   const write = (row, data) => {

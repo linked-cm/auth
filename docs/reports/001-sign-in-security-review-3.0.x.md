@@ -148,30 +148,62 @@ condition uses. Only tools that ignore `exports` read this field.
   the OAuth Playground.
 - **google-auth-library 11 requires Node ≥ 22.**
 
+## 3.0.7: OAuth hardening ported from PR #32
+
+PR #32 (abdipramana, with commits by René) predated 3.0.1–3.0.6 and could no longer be rebased
+without undoing them. What `main` still lacked was ported onto 3.0.6 as five commits in one PR:
+
+- **Tokens and emails stay out of the log.** google-auth-library puts the raw JWT in its error
+  message (`Invalid token signature: <jwt>`), and auth logged it, along with whole OAuth payloads,
+  emails and serialized users. Errors are now logged as constant lines and ids only.
+- **The session cookie had an illegal name.** `@_linked/auth` fails `cookie.serialize`, so any
+  request that wrote `req.session` never finished. It is now `linked.auth`
+  (`SESSION_COOKIE_NAME`).
+- **Removing an account removes every credential and identity token** of it, and async
+  `onAccountWillBeRemoved` listeners are awaited. Where duplicate credential rows exist, the one
+  with a password hash is used.
+- **OAuth sign-in is by the provider's subject, and attaching to an existing email account only
+  happens when it is safe.** Before, an attacker could create a password account with a
+  victim's email (sign-up does not verify it); the victim's later Google sign-in landed in that
+  account, whose password the attacker still knew. Now a sign-in whose email matches an account
+  that has a password, or another link at the same provider, returns
+  `{error, action: 'sign_in_to_link'}`: the user signs in the way they did before and links the
+  provider from inside the session with `linkOAuthIdentity`. Identity tokens are no longer
+  stored, only the subject link. `useAuth().signinOAuth` returns `{error, action}`.
+- **Apple sign-in can carry a server-issued, single-use nonce** (`createOAuthNonce`), checked
+  against the token's `nonce` claim (hashed for native, verbatim for web) and consumed on use.
+  `AUTH_APPLE_NONCE=optional` (default) checks it when present; `required` refuses tokens
+  without one. A nonce taken from the client, as in #32, can be copied out of the token itself,
+  so it had to be issued by the server.
+
+Facebook verification from #32 was not shipped. Its helper needs an account rule first: Facebook
+gives no `email_verified`, so a Facebook-only account must not receive the email-derived WebID,
+or the email's owner can lose the account to whoever created the Facebook link.
+
 ## Known open items
 
-- **No Apple nonce**, so an Apple identity token can be replayed while it is valid. PR #32 adds
-  one.
-- **Accounts are matched by email, not by the provider's `sub`.** An identity provider that lets
-  a user change their email, or reissues one, can move a sign-in to another account.
-- **The raw identity token is stored** in `IdentityToken`.
+- **Facebook sign-in** stays refused until verification ships with the account rule above.
+- **Apple nonce is optional by default**; switch to `AUTH_APPLE_NONCE=required` once every
+  client sends one.
 - **`signinDev` accepts any WebID when the token has no `sub`.** It is dev-only and left as is
   on purpose.
 - **No rate limit on password attempts.** The higher bcrypt cost slows a guessing attack but
   does not stop one.
 - **Single-use reset is not atomic.** The store has no compare-and-swap, so two requests racing
   with the same token can both succeed.
-- **Open PR #32 rewrites the Apple and Facebook code with different environment variable
-  names** (`APPLE_SIGN_IN_CLIENT_ID`, `APPLE_IOS_BUNDLE_ID`, `APP_ID`). When it is rebased it
-  must adopt `APPLE_CLIENT_ID` / `APPLE_CLIENT_ID_IOS`, or every deployment that set them for
-  3.0.1 will refuse Apple sign-in again.
 
 ## For consumers
 
 - **Set `APPLE_CLIENT_ID` (web) and/or `APPLE_CLIENT_ID_IOS` (iOS) wherever Apple sign-in is
   used.** Without them, from 3.0.1 on, every Apple sign-in fails. The PeaceGame data shows Apple
   users; Create Now does not use Apple sign-in.
-- **Facebook sign-in is refused** from 3.0.2 until PR #32 lands.
+- **Facebook sign-in is refused** from 3.0.2 on.
+- **From 3.0.7, handle `action: 'sign_in_to_link'`** from `signinOAuth`: ask the user to sign
+  in with their existing method, then call `linkOAuthIdentity`. Apps with an RPC exposure list
+  declare `linkOAuthIdentity: 'user'`, `createOAuthNonce: 'public'` and
+  `userHasPassword: 'user'`.
+- **The session cookie is `linked.auth` from 3.0.7.** Nothing could set the old name, so no
+  session is lost.
 - **A password change form must send the current password** from 3.0.4 on, unless it carries a
   reset token.
 - **On 3.0.4 or 3.0.5, an app with an RPC exposure list should list `upgradePasswordHash` as

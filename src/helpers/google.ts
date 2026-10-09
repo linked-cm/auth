@@ -31,11 +31,6 @@ const GoogleHelper = {
         return null;
       }
 
-      console.log(
-        'Validating Google ID token against audiences:',
-        audiences.map((id) => id?.substring(0, 20) + '...')
-      );
-
       // verify the ID token with multiple audiences
       const ticket = await client.verifyIdToken({
         idToken: idToken,
@@ -66,13 +61,11 @@ const GoogleHelper = {
         return null;
       }
 
-      console.log(
-        'Google ID token validated successfully for user:',
-        payload.sub
-      );
       return payload;
     } catch (error) {
-      console.error('Error validating Google ID token:', error);
+      // Never log the error itself: google-auth-library puts the raw ID token ("Invalid token
+      // signature: <jwt>") or its decoded payload into the message.
+      console.error('Google ID token rejected');
       return null;
     }
   },

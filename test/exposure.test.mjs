@@ -47,6 +47,8 @@ const BACKEND_CALLED_BY_THE_FRONTEND = [
   'validateToken',
   'signout',
   'removeAccount',
+  'linkOAuthIdentity',
+  'createOAuthNonce',
 ];
 
 for (const method of BACKEND_INTERNAL) {
@@ -73,4 +75,15 @@ test('the methods the frontend calls are not internal', () => {
     assert.equal(isDeclaredInternal(AuthBackendProvider, method), false, method);
   }
   assert.equal(isDeclaredInternal(AuthCredentialProvider, 'userHasAuthCredential'), false);
+  assert.equal(typeof AuthCredentialProvider.prototype.userHasPassword, 'function');
+  assert.equal(isDeclaredInternal(AuthCredentialProvider, 'userHasPassword'), false);
+});
+
+test('the OAuth account helpers are not provider methods', () => {
+  // every provider method can be dispatched over /call; these act on any identity or account
+  for (const name of ['verifyOAuthIdentity', 'findLinks', 'createLink', 'findLinkedProviders',
+    'personHasPassword', 'upgradeLegacyLink', 'loadAccountWithPerson', 'findAccountForWebID']) {
+    assert.equal(AuthBackendProvider.prototype[name], undefined, name);
+    assert.equal(AuthCredentialProvider.prototype[name], undefined, name);
+  }
 });
