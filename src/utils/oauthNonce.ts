@@ -113,9 +113,17 @@ export const UsedNonceStore = {
       .one();
     if (existing) return false;
     await UsedOAuthNonce.create({ nonceHash, expiresAt });
-    await UsedOAuthNonce.deleteWhere((n) => n.expiresAt.lessThan(new Date())).catch((err) =>
-      console.warn('@_linked/auth: could not delete expired nonce records', err?.message ?? err)
-    );
+    // Date comparison is not available in where clauses, so expired records are found here.
+    try {
+      const records = await UsedOAuthNonce.select((n) => [n.expiresAt]);
+      const now = Date.now();
+      const expired = (records || [])
+        .filter((r) => r.expiresAt && new Date(r.expiresAt as any).getTime() < now)
+        .map((r) => ({ id: r.id }));
+      if (expired.length) await UsedOAuthNonce.delete(expired);
+    } catch (err) {
+      console.warn('@_linked/auth: could not delete expired nonce records', (err as any)?.message ?? err);
+    }
     return true;
   },
 };

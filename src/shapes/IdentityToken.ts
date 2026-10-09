@@ -100,6 +100,7 @@ export class IdentityToken extends Shape {
         return [
           t.email,
           t.sub,
+          t.identityProvider,
           t.token,
           t.phoneIdentifier,
           t.account.select((a) => {
@@ -116,6 +117,7 @@ export class IdentityToken extends Shape {
         return [
           t.email,
           t.sub,
+          t.identityProvider,
           t.token,
           t.phoneIdentifier,
           t.account.select((a) => {
@@ -138,7 +140,8 @@ export class IdentityToken extends Shape {
       return [
         t.email,
         t.sub,
-        t.token,
+        t.identityProvider,
+          t.token,
         t.phoneIdentifier,
         t.account.select((a) => {
           return [a.accountOf];
@@ -164,7 +167,8 @@ export class IdentityToken extends Shape {
       return [
         t.email,
         t.sub,
-        t.token,
+        t.identityProvider,
+          t.token,
         t.phoneIdentifier,
         t.account.select((a) => {
           return [a.accountOf];
