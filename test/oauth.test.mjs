@@ -25,6 +25,7 @@ const { Auth } = await import(new URL('utils/auth.js', libDir));
 const { default: AppleHelper } = await import(new URL('helpers/apple.js', libDir));
 const { default: GoogleHelper } = await import(new URL('helpers/google.js', libDir));
 const { default: AuthBackendProvider } = await import(new URL('backend.js', libDir));
+const { emailToWebID } = await import(new URL('utils/webID.js', libDir));
 
 const fakeLincdServer = { callGenericBackendProvidersMethod: async () => {} };
 const SIGNED_IN = { user: { id: 'https://id.test/person/x' }, userAccount: { id: 'acc' } };
@@ -43,8 +44,26 @@ afterEach(() => {
   mock.restoreAll();
 });
 
-/** The label `Auth.login` was called with (`<provider> - <email>`), one per call. */
+/** The label `Auth.login` was called with, one per call. */
 const loginLabels = () => login.mock.calls.map((call) => call.arguments[3]);
+
+/**
+ * The WebID the existing-account lookup of the first `Auth.login` call asks for. The account
+ * shape is replaced by a stub that records the `accountOf` it is filtered on.
+ */
+async function lookedUpWebID() {
+  let webID;
+  provider.accountShape = {
+    select: () => ({
+      where: (filter) => {
+        filter({ accountOf: { equals: (node) => (webID = node.id) } });
+        return { one: async () => null };
+      },
+    }),
+  };
+  await login.mock.calls[0].arguments[1]();
+  return webID;
+}
 
 test('facebook with a client-supplied email is rejected and never reaches login', async () => {
   const result = await provider.signinOAuth('facebook', {
@@ -81,7 +100,8 @@ test('google signs in with the email from the verified ID token, not the client'
     authentication: { idToken: 'google-id-token' },
   });
   assert.equal(validate.mock.calls[0].arguments[0], 'google-id-token');
-  assert.deepEqual(loginLabels(), ['google - ada@example.test']);
+  assert.deepEqual(loginLabels(), ['google OAuth']);
+  assert.equal(await lookedUpWebID(), emailToWebID('ada@example.test'));
   assert.equal(result, SIGNED_IN);
 });
 
@@ -111,7 +131,8 @@ test('apple signs in with the email from the verified identity token, not the cl
     identityToken: 'apple-identity-token',
   });
   assert.equal(decode.mock.calls[0].arguments[0], 'apple-identity-token');
-  assert.deepEqual(loginLabels(), ['apple - ada@example.test']);
+  assert.deepEqual(loginLabels(), ['apple OAuth']);
+  assert.equal(await lookedUpWebID(), emailToWebID('ada@example.test'));
   assert.equal(result, SIGNED_IN);
 });
 

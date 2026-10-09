@@ -274,7 +274,7 @@ export default class AuthBackendProvider extends BackendProvider {
     try {
       webID = emailToWebID(email);
     } catch (error) {
-      console.error(`Invalid email format during signin: ${email}`, error);
+      console.error('Invalid email format during signin');
       return {
         error: 'Invalid email format',
       };
@@ -286,7 +286,7 @@ export default class AuthBackendProvider extends BackendProvider {
 
     if (!existingCredential) {
       console.warn(
-        `Could not find any password associated with this email: ${email}, so we will check by user email`
+        'No password found for this WebID, checking the account by email'
       );
 
       // we get the user by email, if catch the user from here
@@ -386,10 +386,7 @@ export default class AuthBackendProvider extends BackendProvider {
     try {
       webIDFromEmail = emailToWebID(email);
     } catch (error) {
-      console.error(
-        `Invalid email format during account creation: ${email}`,
-        error
-      );
+      console.error('Invalid email format during account creation');
       return {
         error: 'Invalid email format',
       };
@@ -401,7 +398,7 @@ export default class AuthBackendProvider extends BackendProvider {
       .for(webIDFromEmail);
     if (existingWebID) {
       console.warn(
-        `Account creation attempted with existing email: ${email} (webID: ${webIDFromEmail})`
+        `Account creation attempted with an email already in use (webID: ${webIDFromEmail})`
       );
       return {
         error:
@@ -428,13 +425,8 @@ export default class AuthBackendProvider extends BackendProvider {
             telephone: '',
           })
           .catch((err) => {
-            console.error(
-              `Error creating user ${firstName} ${lastName} - ${email}:`,
-              err
-            );
-            throw new Error(
-              `Could not create user ${firstName} ${lastName} - ${email}`
-            );
+            console.error(`Error creating user ${webIDFromEmail}:`, err);
+            throw new Error(`Could not create user ${webIDFromEmail}`);
           });
 
         // generate a new login credential for the user
@@ -463,8 +455,7 @@ export default class AuthBackendProvider extends BackendProvider {
             throw new Error(`Could not create account for user ${user.id}`);
           });
 
-        console.log(`new user:`, JSON.stringify(user));
-        console.log(`new account:`, JSON.stringify(account));
+        console.log(`new user ${user.id}, account ${account.id}`);
 
         return {
           account: account,
@@ -659,10 +650,7 @@ export default class AuthBackendProvider extends BackendProvider {
     try {
       webID = emailToWebID(normalizedEmail);
     } catch (error) {
-      console.error(
-        `Invalid email format during password reset request: ${email}`,
-        error
-      );
+      console.error('Invalid email format during password reset request');
       return {
         error: 'Invalid email format',
       };
@@ -685,7 +673,7 @@ export default class AuthBackendProvider extends BackendProvider {
         .one();
 
       if (!account?.accountOf?.id) {
-        console.warn(`No account found for reset password email ${email}`);
+        console.warn('No account found for a reset password request');
         return {
           error:
             'No password is associated with this account. Please try another login method or contact support.',
@@ -820,7 +808,6 @@ export default class AuthBackendProvider extends BackendProvider {
       // store sub for later use when creating IdentityToken
       oauthUserData._appleSub = applePayload.sub;
 
-      console.log('Apple OAuth validated successfully for:', email);
     }
 
     // handle Google OAuth
@@ -845,16 +832,12 @@ export default class AuthBackendProvider extends BackendProvider {
       givenName = googlePayload.given_name;
       familyName = googlePayload.family_name;
 
-      console.log('Google OAuth validated successfully for:', email);
     }
 
     // Check if email is provided
     if (!email) {
-      console.log(
-        'No email provided to signinOAuth: ',
-        provider,
-        oauthUserData
-      );
+      // Never log oauthUserData: it carries the provider's token.
+      console.log(`signinOAuth: no verified email from ${provider}`);
       return { error: 'could not find email in OAuth response' };
     }
 
@@ -868,10 +851,7 @@ export default class AuthBackendProvider extends BackendProvider {
         try {
           webID = emailToWebID(email);
         } catch (error) {
-          console.error(
-            `Invalid email format during OAuth signin: ${email}`,
-            error
-          );
+          console.error('Invalid email format during OAuth signin');
           return null;
         }
 
@@ -908,10 +888,7 @@ export default class AuthBackendProvider extends BackendProvider {
         try {
           webID = emailToWebID(email);
         } catch (error) {
-          console.error(
-            `Invalid email format during OAuth account creation: ${email}`,
-            error
-          );
+          console.error('Invalid email format during OAuth account creation');
           throw new Error(
             `Could not create ${provider} account: invalid email format`
           );
@@ -929,8 +906,8 @@ export default class AuthBackendProvider extends BackendProvider {
         const user = await (this.userShape as any)
           .create(userData)
           .catch((err) => {
-            console.error(`Error creating ${provider} user - ${email}:`, err);
-            throw new Error(`Could not create ${provider} user - ${email}`);
+            console.error(`Error creating ${provider} user ${webID}:`, err);
+            throw new Error(`Could not create ${provider} user ${webID}`);
           });
 
         // Create AuthCredential for OAuth user (no password needed)
@@ -988,15 +965,14 @@ export default class AuthBackendProvider extends BackendProvider {
           });
         }
 
-        console.log(`${provider} user created:`, JSON.stringify(user));
-        console.log(`${provider} account created:`, JSON.stringify(account));
+        console.log(`${provider} user ${user.id} created, account ${account.id}`);
 
         return {
           account: account as any,
           person: user as any,
         };
       },
-      `${provider} - ${email}`
+      `${provider} OAuth`
     );
   }
 
