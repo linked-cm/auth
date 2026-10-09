@@ -10,7 +10,7 @@
     "type": "git",
     "url": "git+https://github.com/linked-fw/auth.git"
   },
-  "version": "3.0.4",
+  "version": "3.0.5",
   "packageManager": "npm@11.21.0",
   "linkedPackage": true,
   "main": "lib/esm/index.js",

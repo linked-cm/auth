@@ -1,5 +1,11 @@
 # @\_linked/auth
 
+## 3.0.5
+
+### Patch Changes
+
+- [#87](https://github.com/linked-fw/auth/pull/87) [`8a5bd85`](https://github.com/linked-fw/auth/commit/8a5bd859ec5b6c9bd584523bfdaa4d84be4f23c9) Thanks [@flyon](https://github.com/flyon)! - Declares its React peer; accepts React 18 or 19. The components import `react`, which is now a `peerDependencies` entry (`^18.2.0 || ^19.0.0`) so the consumer's single React copy is used.
+
 ## 3.0.4
 
 ### Patch Changes
