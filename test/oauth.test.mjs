@@ -1,8 +1,10 @@
-// signinOAuth only signs in with providers whose token the server verifies itself.
+// signinOAuth only signs in with providers whose token the server verifies itself, and only
+// reaches an existing account by email when that cannot hand it to someone else.
 //
 // Runs against the BUILT package in lib/ (build first: `npx linked build`). No network and no
-// store: the token helpers and `Auth.login` are stubbed, so these tests only check which inputs
-// are allowed to reach the login step and with which email.
+// store: the token helpers, the identity-link store and `Auth.login` are stubbed, so these tests
+// only check which inputs are allowed to reach which account. The same flows run against a real
+// store in test/integration/oauth.fuseki.test.mjs.
 import { test, beforeEach, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -26,18 +28,54 @@ const { default: AppleHelper } = await import(new URL('helpers/apple.js', libDir
 const { default: GoogleHelper } = await import(new URL('helpers/google.js', libDir));
 const { default: AuthBackendProvider } = await import(new URL('backend.js', libDir));
 const { emailToWebID } = await import(new URL('utils/webID.js', libDir));
+const { OAuthIdentityStore } = await import(new URL('utils/oauthIdentities.js', libDir));
+const { decideEmailMatchedAccount, providerOfIdentityLink } = await import(
+  new URL('helpers/oauth-account.js', libDir)
+);
 
 const fakeLincdServer = { callGenericBackendProvidersMethod: async () => {} };
 const SIGNED_IN = { user: { id: 'https://id.test/person/x' }, userAccount: { id: 'acc' } };
 
 let provider;
 let login;
+let onSignin;
+let createLink;
+// what the stubbed store holds
+let links;
+let existingAccount;
+let existingPerson;
+let personHasPassword;
+let linkedProviders;
+let lookedUpWebID;
 
 beforeEach(() => {
   provider = new AuthBackendProvider(null, fakeLincdServer);
   login = mock.method(Auth, 'login', async () => SIGNED_IN);
+  onSignin = mock.method(Auth, 'onSigninSuccessful', async () => SIGNED_IN);
   mock.method(console, 'log', () => {});
   mock.method(console, 'error', () => {});
+  mock.method(console, 'warn', () => {});
+  links = [];
+  existingAccount = null;
+  existingPerson = null;
+  personHasPassword = false;
+  linkedProviders = [];
+  lookedUpWebID = undefined;
+  mock.method(OAuthIdentityStore, 'findLinks', async () => links);
+  mock.method(OAuthIdentityStore, 'personHasPassword', async () => personHasPassword);
+  mock.method(OAuthIdentityStore, 'findLinkedProviders', async () => linkedProviders);
+  mock.method(OAuthIdentityStore, 'upgradeLegacyLink', async () => {});
+  createLink = mock.method(OAuthIdentityStore, 'createLink', async () => {});
+  provider.accountShape = {
+    select: () => ({
+      where: (filter) => {
+        filter({ accountOf: { equals: (node) => (lookedUpWebID = node.id) } });
+        return { one: async () => existingAccount };
+      },
+      for: async (node) => (existingAccount?.id === node.id ? existingAccount : null),
+    }),
+  };
+  provider.userShape = { select: () => ({ for: async () => existingPerson }) };
 });
 
 afterEach(() => {
@@ -47,23 +85,6 @@ afterEach(() => {
 /** The label `Auth.login` was called with, one per call. */
 const loginLabels = () => login.mock.calls.map((call) => call.arguments[3]);
 
-/**
- * The WebID the existing-account lookup of the first `Auth.login` call asks for. The account
- * shape is replaced by a stub that records the `accountOf` it is filtered on.
- */
-async function lookedUpWebID() {
-  let webID;
-  provider.accountShape = {
-    select: () => ({
-      where: (filter) => {
-        filter({ accountOf: { equals: (node) => (webID = node.id) } });
-        return { one: async () => null };
-      },
-    }),
-  };
-  await login.mock.calls[0].arguments[1]();
-  return webID;
-}
 
 test('facebook with a client-supplied email is rejected and never reaches login', async () => {
   const result = await provider.signinOAuth('facebook', {
@@ -101,7 +122,7 @@ test('google signs in with the email from the verified ID token, not the client'
   });
   assert.equal(validate.mock.calls[0].arguments[0], 'google-id-token');
   assert.deepEqual(loginLabels(), ['google OAuth']);
-  assert.equal(await lookedUpWebID(), emailToWebID('ada@example.test'));
+  assert.equal(lookedUpWebID, emailToWebID('ada@example.test'));
   assert.equal(result, SIGNED_IN);
 });
 
@@ -132,7 +153,7 @@ test('apple signs in with the email from the verified identity token, not the cl
   });
   assert.equal(decode.mock.calls[0].arguments[0], 'apple-identity-token');
   assert.deepEqual(loginLabels(), ['apple OAuth']);
-  assert.equal(await lookedUpWebID(), emailToWebID('ada@example.test'));
+  assert.equal(lookedUpWebID, emailToWebID('ada@example.test'));
   assert.equal(result, SIGNED_IN);
 });
 
@@ -150,4 +171,147 @@ test('apple with an invalid identity token is rejected', async () => {
   });
   assert.deepEqual(result, { error: 'Invalid Apple identity token' });
   assert.equal(login.mock.callCount(), 0);
+});
+
+const GOOGLE = { authentication: { idToken: 'google-id-token' } };
+function verifiedGoogle(email = 'ada@example.test', sub = 'g-1') {
+  mock.method(GoogleHelper, 'validateIdToken', async () => ({
+    sub,
+    email,
+    email_verified: true,
+    given_name: 'Ada',
+  }));
+}
+const ADA_WEBID = emailToWebID('ada@example.test');
+const ADA_ACCOUNT = { id: 'https://app.test/account/ada', accountOf: { id: ADA_WEBID } };
+
+test('a linked identity signs in to its account without looking at the email', async () => {
+  verifiedGoogle('someone-else@example.test');
+  links = [{ id: 'link-1', accountId: ADA_ACCOUNT.id, legacy: false }];
+  existingAccount = ADA_ACCOUNT;
+  const result = await provider.signinOAuth('google', GOOGLE);
+  assert.equal(result, SIGNED_IN);
+  assert.equal(onSignin.mock.calls[0].arguments[2], ADA_ACCOUNT);
+  assert.equal(lookedUpWebID, undefined, 'the email was not consulted');
+  assert.equal(login.mock.callCount(), 0);
+});
+
+test('an Apple identity whose token has no email signs in through its link', async () => {
+  mock.method(AppleHelper, 'decodeIdentityToken', async () => ({ sub: 'apple-1', email: undefined }));
+  links = [{ id: 'legacy-1', accountId: ADA_ACCOUNT.id, legacy: true }];
+  existingAccount = ADA_ACCOUNT;
+  const result = await provider.signinOAuth('apple', { identityToken: 'apple-token' });
+  assert.equal(result, SIGNED_IN);
+  assert.equal(OAuthIdentityStore.upgradeLegacyLink.mock.callCount(), 1, 'legacy link upgraded');
+});
+
+test('an identity linked to several accounts fails closed', async () => {
+  verifiedGoogle();
+  links = [
+    { id: 'l1', accountId: 'acc-1', legacy: false },
+    { id: 'l2', accountId: 'acc-2', legacy: false },
+  ];
+  const result = await provider.signinOAuth('google', GOOGLE);
+  assert.ok(result.error);
+  assert.equal(onSignin.mock.callCount() + login.mock.callCount(), 0);
+});
+
+test('a verified email does NOT reach an existing account that has a password', async () => {
+  // pre-account hijacking: someone registered a password account for this address in advance
+  verifiedGoogle();
+  existingAccount = ADA_ACCOUNT;
+  personHasPassword = true;
+  const result = await provider.signinOAuth('google', GOOGLE);
+  assert.equal(result.action, 'sign_in_to_link');
+  assert.ok(result.error);
+  assert.equal(onSignin.mock.callCount() + login.mock.callCount(), 0);
+  assert.equal(createLink.mock.callCount(), 0);
+});
+
+test('a verified email does NOT reach a password person that has no account here yet', async () => {
+  verifiedGoogle();
+  existingPerson = { id: ADA_WEBID };
+  personHasPassword = true;
+  const result = await provider.signinOAuth('google', GOOGLE);
+  assert.equal(result.action, 'sign_in_to_link');
+  assert.equal(onSignin.mock.callCount() + login.mock.callCount(), 0);
+});
+
+test('a verified email attaches to an OAuth-only account and links the identity', async () => {
+  verifiedGoogle();
+  existingAccount = ADA_ACCOUNT;
+  linkedProviders = ['apple'];
+  const result = await provider.signinOAuth('google', GOOGLE);
+  assert.equal(result, SIGNED_IN);
+  assert.equal(createLink.mock.callCount(), 1);
+  const [identity, accountId] = createLink.mock.calls[0].arguments;
+  assert.deepEqual([identity.provider, identity.subject, accountId], ['google', 'g-1', ADA_ACCOUNT.id]);
+});
+
+test('a second identity at the same provider is not attached by email', async () => {
+  verifiedGoogle('ada@example.test', 'g-2');
+  existingAccount = ADA_ACCOUNT;
+  linkedProviders = ['google'];
+  const result = await provider.signinOAuth('google', GOOGLE);
+  assert.equal(result.action, 'sign_in_to_link');
+});
+
+test('a new identity creates an account and links it', async () => {
+  verifiedGoogle();
+  const result = await provider.signinOAuth('google', GOOGLE);
+  assert.equal(result, SIGNED_IN);
+  assert.deepEqual(loginLabels(), ['google OAuth']);
+});
+
+test('linkOAuthIdentity needs a signed-in account', async () => {
+  verifiedGoogle();
+  const result = await provider.linkOAuthIdentity('google', GOOGLE);
+  assert.ok(result.error);
+  assert.equal(createLink.mock.callCount(), 0);
+});
+
+test('linkOAuthIdentity rejects an unverified provider', async () => {
+  const { serving } = await import('./serving.mjs');
+  const p = serving(provider, { headers: {}, cookies: {}, linkedAuth: { userAccount: ADA_ACCOUNT } });
+  const result = await p.linkOAuthIdentity('facebook', { accessToken: 'x', email: 'ada@example.test' });
+  assert.ok(result.error);
+  assert.equal(createLink.mock.callCount(), 0);
+});
+
+test('linkOAuthIdentity links a verified identity to the signed-in account', async () => {
+  const { serving } = await import('./serving.mjs');
+  verifiedGoogle('other@example.test', 'g-9');
+  const p = serving(provider, { headers: {}, cookies: {}, linkedAuth: { userAccount: ADA_ACCOUNT } });
+  assert.deepEqual(await p.linkOAuthIdentity('google', GOOGLE), { linked: true });
+  assert.equal(createLink.mock.calls[0].arguments[1], ADA_ACCOUNT.id);
+});
+
+test('linkOAuthIdentity refuses an identity linked to another account', async () => {
+  const { serving } = await import('./serving.mjs');
+  verifiedGoogle();
+  links = [{ id: 'l1', accountId: 'someone-else', legacy: false }];
+  const p = serving(provider, { headers: {}, cookies: {}, linkedAuth: { userAccount: ADA_ACCOUNT } });
+  const result = await p.linkOAuthIdentity('google', GOOGLE);
+  assert.ok(result.error);
+  assert.equal(createLink.mock.callCount(), 0);
+});
+
+test('decideEmailMatchedAccount: each rule', () => {
+  const decide = (provider, emailVerified, existing) =>
+    decideEmailMatchedAccount({ provider, emailVerified, existing });
+  const none = { hasPassword: false, linkedProviders: [] };
+  assert.deepEqual(decide('google', true, none), { link: true });
+  assert.deepEqual(decide('apple', true, { hasPassword: false, linkedProviders: ['google'] }), { link: true });
+  assert.equal(decide('google', false, none).action, 'sign_in_to_link');
+  assert.equal(decide('facebook', true, none).action, 'sign_in_to_link');
+  assert.equal(decide('google', true, { hasPassword: true, linkedProviders: [] }).action, 'sign_in_to_link');
+  assert.equal(decide('google', true, { hasPassword: false, linkedProviders: ['google'] }).action, 'sign_in_to_link');
+  assert.equal(decide('google', true, { hasPassword: false, linkedProviders: ['facebook'] }).action, 'sign_in_to_link');
+});
+
+test('providerOfIdentityLink: a row without a provider is a legacy Apple link', () => {
+  assert.equal(providerOfIdentityLink({ sub: 's', identityProvider: 'google' }), 'google');
+  assert.equal(providerOfIdentityLink({ sub: 's' }), 'apple');
+  assert.equal(providerOfIdentityLink({ sub: 's', identityProvider: 'github' }), undefined);
+  assert.equal(providerOfIdentityLink({}), undefined);
 });

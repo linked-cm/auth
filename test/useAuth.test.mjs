@@ -37,6 +37,9 @@ const server = http.createServer((req, res) => {
     const send = (obj) =>
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(obj));
     if (req.url.endsWith('/signinWithPassword')) return send({ auth: authFor(), accessToken: token() });
+    if (req.url.endsWith('/signinOAuth')) {
+      return send({ error: 'An account with this email already exists.', action: 'sign_in_to_link' });
+    }
     if (req.url.endsWith('/validateToken')) {
       return refreshMode === 'ok'
         ? send({ auth: authFor(), accessToken: token() })
@@ -114,4 +117,15 @@ test('a session that ends while the tab is open leaves NO half-signed-in state',
   assert.equal(current.validating, false);
   assert.equal(LincdServerProxy.defaultHeaders.Authorization, undefined, 'no stale Authorization');
   assert.equal(client.getAccessTokenExpiresAt(), undefined, 'nothing scheduled');
+});
+
+test('signinOAuth hands the backend error and action to the caller', async () => {
+  let result;
+  await act(async () => {
+    result = await current.signinOAuth('google', { authentication: { idToken: 't' } });
+  });
+  assert.deepEqual(result, {
+    error: 'An account with this email already exists.',
+    action: 'sign_in_to_link',
+  });
 });

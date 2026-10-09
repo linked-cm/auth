@@ -20,6 +20,20 @@ export class AuthCredentialProvider extends ShapeProvider {
     }
     return this.hasAuthCredential(user);
   }
+  /**
+   * Whether the signed-in user has a password (a stored password hash), so email/password
+   * sign-in works for them. Unlike `userHasAuthCredential`, an OAuth-only account, whose
+   * credential row has no hash, answers false.
+   */
+  async userHasPassword() {
+    const user: QResult<Person> = this.request?.linkedAuth?.user;
+    if (!user?.id) return false;
+    const credentials = await AuthCredential.select((cred) => [cred.passwordHash]).where(
+      (cred) => cred.credentialOf.equals({ id: user.id })
+    );
+    return (credentials || []).some((credential) => Boolean(credential.passwordHash));
+  }
+
   async hasAuthCredential(person: QResult<Person>) {
     const credential = await AuthCredential.select()
       .where((p) => p.credentialOf.equals(person))

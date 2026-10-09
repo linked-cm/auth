@@ -33,7 +33,7 @@ import type {
   AuthSession,
 } from '../types/auth.js';
 import { QResult } from '@_linked/core/queries/SelectQuery';
-import type { UserData, UserAccountData } from '../types/auth.js';
+import type { UserData, UserAccountData, LinkOAuthIdentityResult } from '../types/auth.js';
 import { useNavigate } from 'react-router-dom';
 
 export const ENFORCE_SIGNED_IN = 'ENFORCE_SIGNIN';
@@ -106,8 +106,16 @@ export const useAuth = <
     refreshToken: string;
     email?: string;
   }) => Promise<AuthenticationResponse>;
-  //TODO: remove this and change it into a backend call
-  signinOAuth: (provider: OAuthProvider, whatelse?: any) => Promise<any>;
+  /**
+   * Sign in with a provider credential. Resolves to the signed-in auth response, or to
+   * `{error, action?}` (e.g. `action: 'sign_in_to_link'`).
+   */
+  signinOAuth: (
+    provider: OAuthProvider,
+    whatelse?: any
+  ) => Promise<AuthenticationResponse | { error: string; action?: string } | any>;
+  /** Connect a provider identity to the signed-in account. */
+  linkOAuthIdentity: (provider: OAuthProvider, whatelse?: any) => Promise<LinkOAuthIdentityResult>;
   createAccount: (data) => Promise<any>;
   signinTemporary: () => Promise<any>;
   signout: () => Promise<any>;
@@ -361,11 +369,28 @@ function useProvideAuth(signinRoute: string = '') {
           refreshTokenExpiresIn: response.refreshTokenExpiresIn,
           refreshTokenExpiresAt: response.refreshTokenExpiresAt,
         });
-      } else {
-        //TODO: show user feedback
-        console.warn("Couldn't sign in with OAuth");
       }
+      // e.g. action 'sign_in_to_link': the email belongs to an account the provider may not
+      // be attached to on its own; sign in the way the user did before, then linkOAuthIdentity
+      if (response?.error) {
+        return response.action
+          ? { error: String(response.error), action: String(response.action) }
+          : { error: String(response.error) };
+      }
+      return { error: "Couldn't sign in. Please try again or contact support." };
     });
+  };
+
+  const linkOAuthIdentity = (
+    provider: OAuthProvider,
+    source?: any
+  ): Promise<LinkOAuthIdentityResult> => {
+    return Server.call(packageName, 'linkOAuthIdentity', provider, source).then(
+      (response) =>
+        response?.linked
+          ? { linked: true as const }
+          : { error: String(response?.error || "Couldn't connect this sign-in method.") }
+    );
   };
 
   const signinTemporary = () => {
@@ -515,6 +540,7 @@ function useProvideAuth(signinRoute: string = '') {
     user,
     userAccount,
     signinOAuth,
+    linkOAuthIdentity,
     signout,
     updateAuth,
     signinWithPassword,

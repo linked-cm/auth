@@ -1,0 +1,152 @@
+// OAuth sign-in against a REAL graph store: which account a verified provider identity reaches,
+// and what is stored for it. The provider token checks are stubbed (they are covered by
+// test/apple.test.mjs and test/oauth.test.mjs); everything after them is real.
+//
+// Needs a Fuseki server (see fuseki.mjs). Runs against the BUILT package in lib/ (build first).
+import { test, beforeEach, afterEach, mock } from 'node:test';
+import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import { serving } from '../serving.mjs';
+import { useThrowawayDataset, sparql, AUTH } from './fuseki.mjs';
+
+process.env.NODE_ENV = 'test';
+process.env.SITE_ROOT = 'https://app.test';
+process.env.JWT_SECRET = 'integration-test-secret-integration';
+process.env.SESSION_SECRET = 'integration-test-session-secret';
+process.env.AUTH_SESSION_CLEANUP = 'false';
+process.env.DATA_ROOT = 'https://data.app.test';
+
+const libDir = new URL('../../lib/esm/', import.meta.url);
+await import(new URL('shapes/index.js', libDir));
+const { default: AuthBackendProvider } = await import(new URL('backend.js', libDir));
+const { IdentityToken } = await import(new URL('shapes/IdentityToken.js', libDir));
+const { default: GoogleHelper } = await import(new URL('helpers/google.js', libDir));
+const { default: AppleHelper } = await import(new URL('helpers/apple.js', libDir));
+
+const fakeLincdServer = { callGenericBackendProvidersMethod: async () => {} };
+
+useThrowawayDataset();
+
+beforeEach(() => {
+  mock.method(console, 'log', () => {});
+});
+afterEach(() => mock.restoreAll());
+
+function provider(request = { headers: {}, cookies: {} }) {
+  request.headers = { 'x-linked-auth-transport': 'body', ...request.headers };
+  return serving(new AuthBackendProvider(null, fakeLincdServer), request);
+}
+
+async function signedInProvider(accessToken) {
+  const request = { headers: { authorization: `Bearer ${accessToken}` }, cookies: {} };
+  const p = provider(request);
+  assert.ok(await p.validateRequestToken(request), 'access token accepted');
+  return p;
+}
+
+const newEmail = () => `ada-${crypto.randomBytes(4).toString('hex')}@example.test`;
+const newSub = () => `sub-${crypto.randomBytes(6).toString('hex')}`;
+
+function googleSays(email, sub) {
+  mock.method(GoogleHelper, 'validateIdToken', async () => ({
+    sub,
+    email,
+    email_verified: true,
+    given_name: 'Ada',
+    family_name: 'Lovelace',
+  }));
+}
+function appleSays(email, sub) {
+  mock.method(AppleHelper, 'decodeIdentityToken', async () => ({ email, sub }));
+}
+const GOOGLE = { authentication: { idToken: 'google-id-token' } };
+
+/** Every value stored on the identity tokens with this subject, by predicate. */
+async function identityTokensFor(sub) {
+  const rows = await sparql(`
+    PREFIX auth: <${AUTH}>
+    SELECT ?s ?p ?o WHERE {
+      { ?s auth:subject "${sub}" ; ?p ?o } UNION { GRAPH ?g { ?s auth:subject "${sub}" ; ?p ?o } }
+    }`);
+  const bySubject = {};
+  for (const row of rows) {
+    (bySubject[row.s.value] ??= {})[row.p.value.replace(AUTH, '')] = row.o.value;
+  }
+  return Object.values(bySubject);
+}
+
+test('a Google sign-in does not reach a password account registered for that email', async () => {
+  // Pre-account hijacking: account creation does not verify the email, so the password account
+  // may belong to someone who registered the victim's address in advance.
+  const email = newEmail();
+  const created = await provider().createAccount({ firstName: 'Mallory', email, password: 'attacker-Passw0rd!' });
+  assert.equal(created.error, undefined, created.error);
+
+  googleSays(email, newSub());
+  const result = await provider().signinOAuth('google', GOOGLE);
+  assert.equal(result.auth, undefined, 'signed in to the existing password account');
+  assert.equal(result.action, 'sign_in_to_link');
+});
+
+test('the owner of the password account can link Google from inside the session', async () => {
+  const email = newEmail();
+  const sub = newSub();
+  const created = await provider().createAccount({ firstName: 'Ada', email, password: 'ada-Passw0rd!' });
+  googleSays(email, sub);
+  assert.equal((await provider().signinOAuth('google', GOOGLE)).action, 'sign_in_to_link');
+
+  const p = await signedInProvider(created.accessToken);
+  assert.deepEqual(await p.linkOAuthIdentity('google', GOOGLE), { linked: true });
+
+  const signin = await provider().signinOAuth('google', GOOGLE);
+  assert.equal(signin.error, undefined, signin.error);
+  assert.equal(signin.auth.userAccount.id, created.auth.userAccount.id);
+});
+
+test('a new OAuth user gets a link with its provider and no stored token', async () => {
+  const email = newEmail();
+  const sub = newSub();
+  appleSays(email, sub);
+  const result = await provider().signinOAuth('apple', { identityToken: 'raw-apple-identity-token', givenName: 'Ada' });
+  assert.equal(result.error, undefined, result.error);
+  const tokens = await identityTokensFor(sub);
+  assert.equal(tokens.length, 1);
+  assert.equal(tokens[0].identityProvider, 'apple');
+  assert.equal(tokens[0].account, result.auth.userAccount.id);
+  assert.equal(tokens[0].token, undefined, 'the raw identity token was stored');
+
+  // the same identity signs in again, by its link
+  const again = await provider().signinOAuth('apple', { identityToken: 'another-token' });
+  assert.equal(again.auth.userAccount.id, result.auth.userAccount.id);
+});
+
+test('an Apple user linked by an earlier release signs in without an email, and the stored token is removed', async () => {
+  const email = newEmail();
+  const sub = newSub();
+  appleSays(email, sub);
+  const first = await provider().signinOAuth('apple', { identityToken: 'first-token' });
+  assert.equal(first.error, undefined, first.error);
+  // turn the link into what 3.0.6 wrote: a raw token and no provider
+  const [link] = await IdentityToken.select((t) => [t.sub]).where((t) => t.sub.equals(sub));
+  await IdentityToken.update({ identityProvider: null, token: 'legacy-raw-token' }).for({ id: link.id });
+
+  appleSays(undefined, sub);
+  const result = await provider().signinOAuth('apple', { identityToken: 'token-without-email' });
+  assert.equal(result.error, undefined, result.error);
+  assert.equal(result.auth.userAccount.id, first.auth.userAccount.id);
+  const [stored] = await identityTokensFor(sub);
+  assert.equal(stored.token, undefined, 'the legacy token is still stored');
+  assert.equal(stored.identityProvider, 'apple');
+});
+
+test('a verified email attaches a second provider to an OAuth-only account', async () => {
+  const email = newEmail();
+  appleSays(email, newSub());
+  const viaApple = await provider().signinOAuth('apple', { identityToken: 'apple-token' });
+  assert.equal(viaApple.error, undefined, viaApple.error);
+
+  googleSays(email, newSub());
+  const viaGoogle = await provider().signinOAuth('google', GOOGLE);
+  assert.equal(viaGoogle.error, undefined, viaGoogle.error);
+  assert.equal(viaGoogle.auth.userAccount.id, viaApple.auth.userAccount.id);
+});

@@ -11,6 +11,7 @@ export type IdentityTokenResult = QResult<
   IdentityToken,
   {
     sub: string;
+    identityProvider: string;
     token: string;
     phoneIdentifier: string;
     email: string;
@@ -33,6 +34,22 @@ export class IdentityToken extends Shape {
     return '';
   }
 
+  /**
+   * The OAuth provider the subject belongs to ('google', 'apple', 'facebook'). Rows written
+   * before 3.0.7 have none; a row with a subject and no provider is an Apple sign-in.
+   */
+  @literalProperty({
+    path: auth.identityProvider,
+    maxCount: 1,
+  })
+  get identityProvider(): string {
+    return '';
+  }
+
+  /**
+   * The raw identity token. No longer written (since 3.0.7): a stored token is a credential that
+   * can be replayed while it is valid. Kept so older rows can still be read and cleared.
+   */
   @literalProperty({
     path: auth.token,
     maxCount: 1,

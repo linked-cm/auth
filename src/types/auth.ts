@@ -30,6 +30,25 @@ export type AuthenticationResult =
 export type OAuthProvider = 'facebook' | 'google' | 'apple';
 
 /**
+ * What a provider vouches for after its credential was verified on the server. Only `subject`
+ * and (when verified) `email` decide which account is reached; the names only fill in a new
+ * profile.
+ */
+export type VerifiedOAuthIdentity = {
+  provider: OAuthProvider;
+  /** The provider's stable user id (`sub`, or the Facebook user id). */
+  subject: string;
+  email?: string;
+  /** True only when the provider states that the user controls `email`. */
+  emailVerified: boolean;
+  givenName?: string;
+  familyName?: string;
+};
+
+/** The result of `linkOAuthIdentity`. */
+export type LinkOAuthIdentityResult = { linked: true } | { error: string; action?: string };
+
+/**
  * Create a new account signin with email and password.
  */
 export type CreateAccount = {

@@ -135,8 +135,45 @@ const userAccount = auth.userAccount;
 ### Signin with OAuth
 
 ```tsx
-// example OAuth signin method
+const auth = useAuth();
+// Google: the ID token from Google Sign-In. Apple: the identity token (plus, on first consent,
+// the givenName/familyName Apple hands the client).
+const result = await auth.signinOAuth('google', { authentication: { idToken } });
+if ('error' in result) {
+  if (result.action === 'sign_in_to_link') {
+    // An account with this email already exists and the provider may not be attached to it on
+    // its own (it has a password, or another identity). Ask the user to sign in the way they did
+    // before, then connect the provider from inside that session:
+    //   await auth.linkOAuthIdentity('google', { authentication: { idToken } });
+  }
+  showError(result.error);
+}
 ```
+
+The server verifies the provider's token and finds the account from what the provider vouches
+for, never from what the client sent:
+
+1. An identity already linked to an account (provider + subject) signs in to that account.
+2. Otherwise an account with the same email is reached only when the provider verifies the email
+   (Google, Apple), the account has **no password**, and it is not linked to a provider without
+   verified emails or to a different identity at the same provider. Anything else answers
+   `{error, action: 'sign_in_to_link'}`. Account creation does not verify email, so a password
+   account may have been registered by someone else in advance; attaching to it by email would
+   hand them the user's sign-in.
+3. Otherwise a new account is created, without a password.
+
+Each sign-in that reaches an account stores a link (`IdentityToken` with `sub` and
+`identityProvider`). The provider's token itself is never stored. Links written before 3.0.7
+carry no provider (they are Apple links) and may hold the raw Apple identity token; it is removed
+the next time that user signs in. To remove all of them at once:
+
+```sparql
+PREFIX auth: <https://linked.cm/ont/auth/>
+DELETE { GRAPH ?g { ?t auth:token ?v } } WHERE { GRAPH ?g { ?t a auth:IdentityToken ; auth:token ?v } }
+```
+
+`AuthCredential.userHasPassword()` tells whether the signed-in user can sign in with a password
+(an OAuth-only account cannot).
 
 ### Sign out
 

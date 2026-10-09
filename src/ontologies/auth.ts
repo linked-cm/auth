@@ -55,6 +55,8 @@ export var expiresAt = ns('expiresAt');
 export var revokedAt = ns('revokedAt');
 export var replacedBy = ns('replacedBy');
 export var sessionStartedAt = ns('sessionStartedAt');
+/** The OAuth provider ('google', 'apple', 'facebook') an IdentityToken's subject belongs to. */
+export var identityProvider = ns('identityProvider');
 
 //An extra grouping object so all the entities can be accessed from the prefix/name
 export const auth = {
@@ -83,5 +85,6 @@ export const auth = {
   revokedAt,
   replacedBy,
   sessionStartedAt,
+  identityProvider,
 };
 
