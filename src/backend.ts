@@ -62,6 +62,13 @@ var SQLiteStore = connect_sqlite3(session);
  */
 const VERIFIED_OAUTH_PROVIDERS: readonly string[] = ['google', 'apple'];
 
+/**
+ * The name of the express-session cookie. It used to be the package name, `@_linked/auth`, which
+ * `cookie.serialize` rejects ("argument name is invalid"): every response that wrote
+ * `req.session` threw while sending its headers and never finished.
+ */
+export const SESSION_COOKIE_NAME = 'linked.auth';
+
 declare var process;
 // The configured user shape (`Auth.userType`). Historically `SchemaPerson | FoafPerson`;
 // `foaf` was the last legacy `lincd` package in this dependency tree and the
@@ -167,7 +174,7 @@ export default class AuthBackendProvider extends BackendProvider {
       '/',
       session({
         secret: sessionSecret,
-        name: '@_linked/auth',
+        name: SESSION_COOKIE_NAME,
         //TODO: this broke sessions in production, need to check what else we need to do to make secure sessions work
         // cookie: {secure: process.env.NODE_ENV === 'production'},
         resave: true,
