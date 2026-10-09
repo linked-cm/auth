@@ -105,5 +105,8 @@
       ]
     }
   },
-  "type": "module"
+  "type": "module",
+  "allowScripts": {
+    "sqlite3@5.1.7": true
+  }
 }
