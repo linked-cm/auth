@@ -69,7 +69,7 @@
     "@_linked/fuseki": "^3.2.3",
     "@changesets/changelog-github": "^1.0.0",
     "@changesets/cli": "^3.0.0",
-    "express": "^4.22.3",
+    "express": "^5.0.0",
     "jsdom": "^30.0.0",
     "react-dom": "^19.3.0",
     "tsconfig-to-dual-package": "^1.2.0",
