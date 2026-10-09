@@ -63,6 +63,7 @@
     "zeptomail": "^3.0.4"
   },
   "peerDependencies": {
+    "react": "^18.2.0 || ^19.0.0",
     "react-router-dom": "^6.14.2"
   },
   "devDependencies": {
