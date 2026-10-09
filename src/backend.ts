@@ -70,6 +70,17 @@ const VERIFIED_OAUTH_PROVIDERS: readonly string[] = ['google', 'apple'];
 export const SESSION_COOKIE_NAME = 'linked.auth';
 
 declare var process;
+
+/**
+ * The credential to check a password against: the first one with a password hash, otherwise
+ * the first one (which then has no password).
+ */
+function preferCredentialWithPassword<C extends { passwordHash?: string }>(
+  credentials: C[] | null | undefined
+): C | undefined {
+  if (!credentials?.length) return undefined;
+  return credentials.find((credential) => Boolean(credential.passwordHash)) ?? credentials[0];
+}
 // The configured user shape (`Auth.userType`). Historically `SchemaPerson | FoafPerson`;
 // `foaf` was the last legacy `lincd` package in this dependency tree and the
 // union was type-only, so this widens to the same `typeof Shape` that
@@ -312,18 +323,18 @@ export default class AuthBackendProvider extends BackendProvider {
         };
       }
 
-      existingCredential = await AuthCredential.select((ac) => {
-        return [
-          ac.passwordHash,
-          ac.credentialOf.select((p) => {
-            return [p.givenName, p.familyName, p.telephone];
-          }),
-        ];
-      })
-        .where((ac) => {
-          return ac.credentialOf.equals(account.accountOf);
+      existingCredential = preferCredentialWithPassword(
+        await AuthCredential.select((ac) => {
+          return [
+            ac.passwordHash,
+            ac.credentialOf.select((p) => {
+              return [p.givenName, p.familyName, p.telephone];
+            }),
+          ];
+        }).where((ac) => {
+          return ac.credentialOf.equals({ id: account.accountOf.id });
         })
-        .one();
+      );
 
       if (!existingCredential) {
         return {
@@ -480,18 +491,19 @@ export default class AuthBackendProvider extends BackendProvider {
    * @returns The password (AuthCredential)
    */
   async getPasswordForUser(user: QResult<Person>) {
-    const credential = await AuthCredential.select((cred) => {
+    const credentials = await AuthCredential.select((cred) => {
       return [
         cred.passwordHash,
         cred.credentialOf.select((p) => {
           return [p.givenName, p.familyName, p.telephone];
         }),
       ];
-    })
-      .where((cred) => {
-        return cred.credentialOf.equals({ id: user.id });
-      })
-      .one();
+    }).where((cred) => {
+      return cred.credentialOf.equals({ id: user.id });
+    });
+    // OAuth sign-in and older releases can leave several credential rows on one person, some
+    // without a password hash. The one with a hash is the password.
+    const credential = preferCredentialWithPassword(credentials);
 
     if (!credential) {
       console.warn(`Could not find any password for account ${user.id}`);
@@ -1090,15 +1102,22 @@ export default class AuthBackendProvider extends BackendProvider {
     const account = auth.userAccount;
     const user = auth.user;
 
+    if (!account?.id || !user?.id) {
+      throw new Error('Cannot remove account: the session has no account or user id');
+    }
+
     await emitAccountWillBeRemovedEvent(account);
     await deleteAllSessionsForAccount(account.id);
 
-    // before remove the account and user, we need to remove the other related data authentication
-    const password = await this.getPasswordForUser(user);
-    // delete by reference: these results carry nested data, which delete() rejects
-    if (password) {
-      await AuthCredential.delete({ id: password.id });
-    }
+    // Delete every credential of the person and every identity token of the account BEFORE the
+    // person and account: deleting those also removes the links pointing at them, which would
+    // leave these nodes unreachable but still holding the email, password hashes and subject.
+    await AuthCredential.deleteWhere((credential) =>
+      credential.credentialOf.equals({ id: user.id })
+    );
+    await IdentityToken.deleteWhere((token) =>
+      token.account.equals({ id: account.id })
+    );
 
     //remove account and user
     await this.accountShape.delete({ id: account.id });
