@@ -114,6 +114,11 @@ export const useAuth = <
     provider: OAuthProvider,
     whatelse?: any
   ) => Promise<AuthenticationResponse | { error: string; action?: string } | any>;
+  /**
+   * A one-time nonce for a provider sign-in: hand it (or its SHA-256, hex) to the provider and
+   * send it back as `nonce` with the identity token.
+   */
+  createOAuthNonce: () => Promise<{ nonce: string; expiresAt: string }>;
   /** Connect a provider identity to the signed-in account. */
   linkOAuthIdentity: (provider: OAuthProvider, whatelse?: any) => Promise<LinkOAuthIdentityResult>;
   createAccount: (data) => Promise<any>;
@@ -381,6 +386,10 @@ function useProvideAuth(signinRoute: string = '') {
     });
   };
 
+  const createOAuthNonce = (): Promise<{ nonce: string; expiresAt: string }> => {
+    return Server.call(packageName, 'createOAuthNonce');
+  };
+
   const linkOAuthIdentity = (
     provider: OAuthProvider,
     source?: any
@@ -541,6 +550,7 @@ function useProvideAuth(signinRoute: string = '') {
     userAccount,
     signinOAuth,
     linkOAuthIdentity,
+    createOAuthNonce,
     signout,
     updateAuth,
     signinWithPassword,

@@ -150,3 +150,21 @@ test('a verified email attaches a second provider to an OAuth-only account', asy
   assert.equal(viaGoogle.error, undefined, viaGoogle.error);
   assert.equal(viaGoogle.auth.userAccount.id, viaApple.auth.userAccount.id);
 });
+
+test('a redeemed nonce is recorded once, and expired records are deleted', async () => {
+  const { UsedNonceStore } = await import(new URL('utils/oauthNonce.js', libDir));
+  const hash = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + 600_000);
+  assert.equal(await UsedNonceStore.markUsed(hash, expiresAt), true, 'first use');
+  assert.equal(await UsedNonceStore.markUsed(hash, expiresAt), false, 'second use');
+
+  const old = crypto.randomBytes(32).toString('hex');
+  const { UsedOAuthNonce } = await import(new URL('shapes/UsedOAuthNonce.js', libDir));
+  await UsedOAuthNonce.create({ nonceHash: old, expiresAt: new Date(Date.now() - 60_000) });
+  await UsedNonceStore.markUsed(crypto.randomBytes(32).toString('hex'), expiresAt);
+  const left = await sparql(`
+    PREFIX auth: <${AUTH}>
+    SELECT ?s WHERE { { ?s auth:nonceHash "${old}" } UNION { GRAPH ?g { ?s auth:nonceHash "${old}" } } }`);
+  assert.equal(left.length, 0, 'the expired record is still stored');
+  assert.equal(await UsedNonceStore.markUsed(hash, expiresAt), false, 'a live record was deleted');
+});

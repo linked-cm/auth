@@ -111,6 +111,8 @@ import { PaidAccountTier1 } from 'lincd-dating/lib/shapes/PaidAccountTier1';
 | `GOOGLE_CLIENT_ID` | the Google OAuth web client ID |
 | `GOOGLE_CLIENT_ID_IOS` | the Google OAuth iOS client ID |
 | `GOOGLE_CLIENT_ID_ANDROID` | the Google OAuth Android client ID |
+| `AUTH_APPLE_NONCE` | `optional` (default) or `required`; see *Apple sign-in nonce* below. Any other value counts as `required` |
+| `AUTH_OAUTH_NONCE_TTL` | seconds a sign-in nonce can be redeemed (default 600) |
 
 Old refresh token records are deleted by `cleanupExpiredSessions(store?, {olderThan})` from `@_linked/auth/utils/sessions`. The backend provider runs it in the background a few minutes after startup and then at most once a day per process; turn that off with `AUTH_SESSION_CLEANUP=false` when a separate job does it.
 
@@ -171,6 +173,27 @@ the next time that user signs in. To remove all of them at once:
 PREFIX auth: <https://linked.cm/ont/auth/>
 DELETE { GRAPH ?g { ?t auth:token ?v } } WHERE { GRAPH ?g { ?t a auth:IdentityToken ; auth:token ?v } }
 ```
+
+#### Apple sign-in nonce
+
+Ask the server for a nonce before starting Sign in with Apple, give it (or its SHA-256, hex) to
+Apple as the request's `nonce`, and send the raw nonce back with the identity token:
+
+```tsx
+const { nonce } = await auth.createOAuthNonce();
+// native: pass sha256hex(nonce) to Apple; Apple JS: pass nonce as is
+const result = await auth.signinOAuth('apple', { identityToken, nonce });
+```
+
+The server checks that it issued the nonce (it is signed with `JWT_SECRET`), that it has not
+expired, that the token's `nonce` claim carries it, and that it was never used before (a used
+nonce is recorded as `UsedOAuthNonce` until it expires). A stolen identity token is then useless
+without its nonce and can never sign in twice. Issuing a nonce stores nothing.
+
+With `AUTH_APPLE_NONCE=optional` (the default) a sign-in that sends no nonce is still accepted,
+so existing clients keep working while they are updated; it has no replay protection. Set
+`AUTH_APPLE_NONCE=required` once every client sends one. A nonce the client made up itself is
+always rejected.
 
 `AuthCredential.userHasPassword()` tells whether the signed-in user can sign in with a password
 (an OAuth-only account cannot).

@@ -50,6 +50,7 @@ import PasswordHelper from './helpers/password.js';
 import { IdentityToken } from './shapes/IdentityToken.js';
 import { decideEmailMatchedAccount } from './helpers/oauth-account.js';
 import { OAuthIdentityStore } from './utils/oauthIdentities.js';
+import { checkAppleNonce, issueOAuthNonce } from './utils/oauthNonce.js';
 import type { OAuthIdentityLink } from './utils/oauthIdentities.js';
 import path, { dirname, basename } from 'path';
 import { LinkedEmail } from '@_linked/server-utils/utils/LinkedEmail';
@@ -109,6 +110,11 @@ async function verifyOAuthIdentity(
     if (!apple) {
       console.error('Apple OAuth: Invalid identity token');
       return { error: 'Invalid Apple identity token' };
+    }
+    const nonceProblem = await checkAppleNonce(apple.nonce, oauthUserData.nonce);
+    if (nonceProblem) {
+      console.error(`Apple OAuth: ${nonceProblem}`);
+      return { error: nonceProblem };
     }
     return {
       provider,
@@ -893,7 +899,8 @@ export default class AuthBackendProvider extends BackendProvider {
    *
    * @param provider - The OAuth provider
    * @param oauthUserData - The provider's credential (Google: `authentication.idToken`, Apple:
-   *   `identityToken`), plus for Apple the name the client received on first consent
+   *   `identityToken` and the `nonce` from `createOAuthNonce`, see AUTH_APPLE_NONCE), plus for
+   *   Apple the name the client received on first consent
    */
   async signinOAuth(
     provider: OAuthProvider,
@@ -1028,6 +1035,17 @@ export default class AuthBackendProvider extends BackendProvider {
       },
       `${provider} OAuth`
     );
+  }
+
+  /**
+   * Issue a sign-in nonce. The client hands it (or its SHA-256, hex) to the provider, e.g. as
+   * the `nonce` of Sign in with Apple, and sends the raw nonce back with the identity token as
+   * `nonce`. Each nonce works for one sign-in, within `AUTH_OAUTH_NONCE_TTL` seconds (default
+   * 600). Issuing stores nothing.
+   */
+  async createOAuthNonce(): Promise<{ nonce: string; expiresAt: string }> {
+    const { nonce, expiresAt } = issueOAuthNonce();
+    return { nonce, expiresAt: expiresAt.toISOString() };
   }
 
   /**

@@ -48,6 +48,7 @@ const BACKEND_CALLED_BY_THE_FRONTEND = [
   'signout',
   'removeAccount',
   'linkOAuthIdentity',
+  'createOAuthNonce',
 ];
 
 for (const method of BACKEND_INTERNAL) {

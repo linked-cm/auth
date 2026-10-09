@@ -57,6 +57,8 @@ export var replacedBy = ns('replacedBy');
 export var sessionStartedAt = ns('sessionStartedAt');
 /** The OAuth provider ('google', 'apple', 'facebook') an IdentityToken's subject belongs to. */
 export var identityProvider = ns('identityProvider');
+export var UsedOAuthNonce = ns('UsedOAuthNonce');
+export var nonceHash = ns('nonceHash');
 
 //An extra grouping object so all the entities can be accessed from the prefix/name
 export const auth = {
@@ -86,5 +88,7 @@ export const auth = {
   replacedBy,
   sessionStartedAt,
   identityProvider,
+  UsedOAuthNonce,
+  nonceHash,
 };
 
