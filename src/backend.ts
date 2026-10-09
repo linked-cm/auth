@@ -2,6 +2,7 @@ import { Person as SchemaPerson } from '@_linked/schema/shapes/Person';
 import type { Shape } from '@_linked/core/shapes/Shape';
 import { UserAccount } from '@_linked/sioc/shapes/UserAccount';
 import { BackendProvider } from '@_linked/server-utils/utils/BackendProvider';
+import { declareInternal } from '@_linked/server-utils/utils/callable';
 import session from 'express-session';
 
 import { Auth } from './utils/auth.js';
@@ -1362,3 +1363,22 @@ export default class AuthBackendProvider extends BackendProvider {
     return (req as any)?.cookies && (req as any).cookies.refreshToken;
   }
 }
+
+/**
+ * Methods the server must never dispatch over HTTP (`/call/@_linked/auth/...`). They act on a
+ * credential, person or account the caller names, without checking who is asking, and are only
+ * meant to be called by this provider's own sign-in, reset and refresh code. Exposed, they would
+ * let anyone set a credential's password hash (`upgradePasswordHash`), read a password hash
+ * (`getPasswordForUser`), create an account for any WebID (`getOrCreateAccount`), or read an
+ * account's email or a person's details (`loadAccountForSession`, `loadUserForSession`).
+ *
+ * An internal declaration is inherited, so a subclass that overrides one of these stays covered.
+ * Backend-to-backend calls are unaffected.
+ */
+declareInternal(AuthBackendProvider, [
+  'upgradePasswordHash',
+  'getPasswordForUser',
+  'getOrCreateAccount',
+  'loadAccountForSession',
+  'loadUserForSession',
+]);

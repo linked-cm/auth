@@ -1,4 +1,5 @@
 import { ShapeProvider } from '@_linked/server-utils/utils/ShapeProvider';
+import { declareInternal } from '@_linked/server-utils/utils/callable';
 import { AuthCredential } from './AuthCredential.js';
 import PasswordHelper from '../helpers/password.js';
 import { QResult } from '@_linked/core/queries/SelectQuery';
@@ -49,3 +50,10 @@ export class AuthCredentialProvider extends ShapeProvider {
     return credential;
   }
 }
+
+/**
+ * `createNewCredential` adds a password to any person the caller names, so the server must never
+ * dispatch it over HTTP. `resetPassword` reaches it through `AuthCredential.createNewCredential`,
+ * a backend-to-backend call, which this does not affect.
+ */
+declareInternal(AuthCredentialProvider, ['createNewCredential']);
